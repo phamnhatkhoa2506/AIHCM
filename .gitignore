@@ -1,0 +1,13 @@
+.claude/
+.vscode/
+data/
+papers/
+v3/index/
+v3/.cache/
+__pycache__/
+**/.env
+.venv/
+venv/
+**/*.pkl
+**/*.csv
+**/*.jsonl
