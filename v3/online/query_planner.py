@@ -81,9 +81,17 @@ PLAN_SCHEMA = {
                 "required": ["entity_term", "attribute_text"],
             },
         },
+        "audio_mentions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"term": {"type": "string"}},
+                "required": ["term"],
+            },
+        },
         "clip_text": {"type": "string"},
     },
-    "required": ["entities", "secondary_entities", "attributes", "clip_text"],
+    "required": ["entities", "secondary_entities", "attributes", "audio_mentions", "clip_text"],
 }
 
 SYSTEM_PROMPT = """You decompose a Vietnamese video-search query into structured constraints.
@@ -138,14 +146,36 @@ LITERALLY WRITTEN in the query text. Do NOT infer unstated body parts from a ver
 the word "tay"/"bàn tay". If in doubt whether a noun is actually present in the text, leave it
 out entirely rather than guess.
 
-Extract "attributes": visual attributes (color, clothing, pattern, accessory) tied to ONE
-specific concrete subject in the query — e.g. "áo đỏ" describing "diễn giả". "entity_term" is
-the Vietnamese noun for that subject — it does NOT need to also appear in "entities" above (a
-subject can have an attribute even when it has no quantity signal and so is absent from
-"entities" — attribute matching resolves its own label independently, it is not a hard filter
-either). "attribute_text" is a short Vietnamese phrase combining the entity + attribute (e.g.
-"người mặc áo đỏ") — this will be matched against a CROPPED region of just that entity, not the
-whole image, so make it self-contained and visual.
+Extract "attributes": visual attributes (color, clothing, pattern, accessory, material, pose)
+tied to ONE specific concrete subject in the query — e.g. "áo đỏ" describing "diễn giả".
+"entity_term" is the Vietnamese noun for that subject — it does NOT need to also appear in
+"entities" above (a subject can have an attribute even when it has no quantity signal and so is
+absent from "entities" — attribute matching resolves its own label independently, it is not a
+hard filter either). "attribute_text" is a short Vietnamese phrase combining the entity + the
+attribute (e.g. "người mặc áo đỏ") — this will be matched against a CROPPED region containing
+ONLY that entity (nothing outside its bounding box is visible to this match), so it MUST be
+self-contained and describe something that is physically part of / touching the entity itself.
+
+CRITICAL — do NOT put SCENE/LOCATION/SURROUNDING context into attribute_text, only what is ON
+or PART OF the entity: "ở sân bay" (at the airport), "trong công viên" (in the park), "phía sau
+có cây xanh" (with trees behind), "trên đường phố đông người" (on a crowded street) describe the
+BACKGROUND, which falls OUTSIDE a cropped box of just the entity — a Region-CLIP match against
+"ô tô ở sân bay" run on a car crop can never see the airport, so it is comparing an image with
+nothing airport-like against text describing an airport - meaningless/misleading score. Location
+context belongs ONLY in "clip_text" (whole-frame match already covers it), never in
+attribute_text. If a subject has no attribute confined to itself (only surrounding context),
+omit it from "attributes" entirely rather than smuggling the location in.
+
+Extract "audio_mentions": short topic phrases the query says are SPOKEN/SAID/HEARD in the
+video — built around verbs like "nói"/"nhắc tới"/"đề cập"/"kể về"/"nói rằng" (say/mention/talk
+about/tell about/say that) whose object is a TOPIC of speech, not a visible thing — e.g. "MC
+nhắc tới Pháp" (the host mentions France) -> {"term": "Pháp"}; "người nói về giá xăng" (someone
+talks about gas prices) -> {"term": "giá xăng"}. "term" is the SHORT Vietnamese phrase that was
+said (a word/name/short phrase, NOT the whole clause) — this is matched against a speech-to-text
+transcript, not the image, so it must be the literal topic word(s), not a paraphrase. Only
+extract if the query explicitly frames it as spoken content (a verb of saying/mentioning) — do
+NOT extract on-screen text/captions/signs here (that is a different, separate mechanism), and do
+NOT invent a mention that is not stated. Leave empty if the query has no spoken-content clause.
 
 "clip_text": the ORIGINAL query, unchanged — always keep it in full (colors, actions, scene,
 location all matter for whole-frame semantic ranking too, even for entities/attributes
@@ -175,7 +205,17 @@ Example query: "hai người mặc áo trắng và xám đang nhìn vào bàn ta
 Example output: {"entities": [{"term": "người", "min_count": 2}], "secondary_entities": [{"term": "bàn tay"}], "attributes": [{"entity_term": "người", "attribute_text": "người mặc áo trắng và xám"}], "clip_text": "hai người mặc áo trắng và xám đang nhìn vào bàn tay ở giữa"}
 (Note: "bàn tay" here is ONE compound noun meaning "hand" — do NOT extract "bàn" (table) as a
 separate entity. It IS mentioned and matters (people are looking at it), but hands are small/
-easily occluded so it goes in "secondary_entities" — a soft boost, not a strict hard filter.)"""
+easily occluded so it goes in "secondary_entities" — a soft boost, not a strict hard filter.)
+
+Example query: "Sau cảnh ba ô tô ở sân bay, có chữ NANTES và MC nhắc tới Pháp"
+Example output: {"entities": [{"term": "ô tô", "min_count": 3}], "attributes": [], "audio_mentions": [{"term": "Pháp"}], "clip_text": "Sau cảnh ba ô tô ở sân bay, có chữ NANTES và MC nhắc tới Pháp"}
+(attributes is EMPTY — "ở sân bay" is the SCENE surrounding the cars, not something on/part of a
+car itself, so it must NOT become {"entity_term": "ô tô", "attribute_text": "ô tô ở sân bay"}
+(that would compare a CROPPED car image, which never shows the airport, against airport text —
+meaningless). The location still reaches the ranker via clip_text (whole-frame match) — it just
+does not belong in attributes. "MC nhắc tới Pháp" IS a spoken-content clause ("nhắc tới" = mention)
+-> audio_mentions=[{"term": "Pháp"}], matched against the ASR transcript, not the image. "NANTES"
+is on-screen TEXT, not speech — it stays OUT of audio_mentions (handled separately by OCR).)"""
 
 
 def plan_query(query: str) -> dict:
@@ -194,7 +234,7 @@ def plan_query(query: str) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         # phong than: khong phan ra duoc -> chi dung CLIP nhu cu
-        return {"entities": [], "secondary_entities": [], "attributes": [], "clip_text": query}
+        return {"entities": [], "secondary_entities": [], "attributes": [], "audio_mentions": [], "clip_text": query}
 
 
 # Nhan bo phan co the (OpenImages) - KHONG BAO GIO duoc lam hard-filter entity, du LLM co
@@ -206,13 +246,15 @@ _BODY_PART_LABELS = {
 }
 
 
-def planned_search(
-    query: str, top_k: int = 12, log: StepLog | None = None, use_region_clip: bool = True, **filters
-) -> tuple[pd.DataFrame, dict]:
-    """Phân rã query -> resolve entity sang nhãn tiếng Anh -> gọi search() với must_have_labels/
-    min_count (Tầng 1) + clip_text (Tầng 2). Trả (kết quả, plan) — plan để hiển thị debug/soát."""
+def extract_entities(query: str, log: StepLog | None = None) -> dict:
+    """LLM phan ra plan_query() -> resolve entities sang nhan OpenImages (voi chan cung bo
+    phan co the - xem _BODY_PART_LABELS). Tra ve plan (dict) da them cac key
+    resolved_must_have_labels/resolved_min_count/unresolved. TACH RIENG (2026-08-15, theo yeu
+    cau nguoi dung) tu planned_search() de dung CHUNG duoc cho ca duong BTC cu (planned_search
+    duoi day) LAN duong dense mac dinh (app.py goi thang ham nay, khong qua planned_search/
+    search() BTC nua - xem tiers/dense_search.py)."""
     if log:
-        with log.timed("Tầng 0 — LLM phân rã câu (NIM, meta/llama-3.1-8b-instruct)") as set_detail:
+        with log.timed("LLM phân rã câu (NIM, meta/llama-3.1-8b-instruct)") as set_detail:
             plan = plan_query(query)
             set_detail(f"{len(plan.get('entities', []))} entity trích được")
     else:
@@ -224,7 +266,7 @@ def planned_search(
     demoted_to_secondary: list[str] = []  # xem _BODY_PART_LABELS ben duoi
 
     _noop = lambda *_a, **_k: None  # noqa: E731
-    with (log.timed("Tầng 0 — resolve entity sang nhãn OpenImages") if log else contextlib.nullcontext(_noop)) as set_detail:
+    with (log.timed("Resolve entity sang nhãn OpenImages") if log else contextlib.nullcontext(_noop)) as set_detail:
         for ent in plan.get("entities", []):
             term, cnt = ent["term"], ent.get("min_count", 1)
             hits = resolve_label_vi(term)
@@ -257,6 +299,19 @@ def planned_search(
         for term in demoted_to_secondary:
             if term not in existing_secondary_terms:
                 plan.setdefault("secondary_entities", []).append({"term": term})
+    return plan
+
+
+def planned_search(
+    query: str, top_k: int = 12, log: StepLog | None = None, use_region_clip: bool = True, **filters
+) -> tuple[pd.DataFrame, dict]:
+    """Phân rã query -> resolve entity sang nhãn tiếng Anh -> gọi search() với must_have_labels/
+    min_count (Tầng 1) + clip_text (Tầng 2). Trả (kết quả, plan) — plan để hiển thị debug/soát.
+    CHẠY TRÊN BỘ BTC CŨ (search() -> tier1_filter/tier2_vector) - xem extract_entities() ở trên
+    để dùng LLM phân rã trên bộ dense (app.py gọi thẳng, không qua hàm này)."""
+    plan = extract_entities(query, log)
+    must_have_labels = plan["resolved_must_have_labels"]
+    min_count = plan["resolved_min_count"]
 
     # gop voi filter nguoi dung tu truyen vao (vd tu app.py) - filter tu plan uu tien hon
     user_must_have = filters.pop("must_have_labels", None) or []

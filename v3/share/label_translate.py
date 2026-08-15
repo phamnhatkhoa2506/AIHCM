@@ -106,6 +106,64 @@ def _load() -> None:
     _synonyms_norm = {_normalize(k): v for k, v in SYNONYMS.items()}
 
 
+def list_labels_vi() -> list[str]:
+    """Danh sach nhan tieng Viet CHINH THUC (514 nhan closed-set BTC, label_vi.json) - dung
+    cho UI selectbox (2026-08-15, theo yeu cau nguoi dung: chan nguoi dung go nhan ngoai
+    khong resolve duoc) thay vi text_input tu do. Sap xep theo bang chu cai tieng Viet
+    (NFC-normalize) - KHONG bao gom open-vocab/synonym (chi 514 nhan chinh, chac chan
+    resolve() tra dung 1 nhan)."""
+    _load()
+    assert _label_vi is not None
+    return sorted(_label_vi.values(), key=lambda s: unicodedata.normalize("NFC", s.lower()))
+
+
+def find_known_terms(text_vi: str) -> dict[str, str]:
+    """Quet CA CAU (khong phai 1 tu/cum rieng le nhu resolve()) tim cac tu/cum tieng Viet co
+    trong tu dien da biet (label_vi.json + SYNONYMS + label_synonyms.json) xuat hien lam
+    SUBSTRING (word-boundary) - dung lam glossary hint cho LLM dich (2026-08-15, xem
+    query_distill.py) de tranh LLM tu doan sai thuat ngu dac thu van hoa/domain (vd "lân"
+    -> bi doan nham thanh "ox" + bia them canh, thay vi dung "lion dance costume" da co san
+    trong SYNONYMS). Nguong do dai >=3 ky tu (long hon nguong 4 cua resolve() vi day chi la
+    GOI Y cho LLM, khong phai auto-apply hard-filter, chap nhan rong hon mot chut).
+
+    SUA BUG THAT (2026-08-15, phat hien qua test tong quat hoa): ban dau chi filter substring
+    THO, KHONG loai overlap - "bàn tay" (hand) bi tach nham thanh "bàn" (Table) + "tay" (Human
+    hand) 2 hit RIENG LE (dung LOP BUG COMPOUND NOUN da biet o query_planner.py SYSTEM_PROMPT -
+    tu dau tien cua 1 cum ghep lai la 1 danh tu doc lap voi nghia KHAC). Fix: GREEDY LONGEST-
+    MATCH-FIRST, khong cho 2 hit CHONG LAN vi tri ky tu trong cau goc - "bàn tay" (dai hon,
+    khop truoc) se LOAI "bàn"/"tay" rieng le khoi ket qua."""
+    _load()
+    assert _vi_norm_to_label is not None
+    q_norm = _normalize(text_vi)
+    qp = f" {q_norm} "
+
+    candidates = []  # (start, end, vi_norm, en) - vi tri TU CHINH trong qp (KHONG tinh 2 khoang
+    # trang dem 2 dau - 2 tu lien nhau dung chung 1 ky tu khoang trang lam ranh gioi, neu tinh
+    # ca khoang trang do vao span se bao overlap GIA giua 2 tu THAT SU khac nhau, vd "bàn" va
+    # "tay" trong "bàn tay" dung chung 1 dau cach o giua - da phat hien qua test).
+    for vi_norm, en in _vi_norm_to_label.items():
+        if len(vi_norm) < 3:
+            continue
+        needle = f" {vi_norm} "
+        start = qp.find(needle)
+        while start != -1:
+            candidates.append((start + 1, start + 1 + len(vi_norm), vi_norm, en))
+            start = qp.find(needle, start + 1)
+
+    # greedy: uu tien cum DAI HON truoc (nhieu ky tu hon = it mo ho hon), bo qua cum nao CHONG
+    # LAN vi tri voi 1 cum da chon (vd "tay" trong "bàn tay" khong duoc chon rieng vi "bàn tay"
+    # da chiem dung vi tri do).
+    candidates.sort(key=lambda c: -(c[1] - c[0]))
+    taken_spans: list[tuple[int, int]] = []
+    hits: dict[str, str] = {}
+    for start, end, vi_norm, en in candidates:
+        if any(start < t_end and end > t_start for t_start, t_end in taken_spans):
+            continue
+        taken_spans.append((start, end))
+        hits[vi_norm] = en
+    return hits
+
+
 def resolve(term_vi: str) -> list[str]:
     """Khớp CHẮC CHẮN (exact/synonym/substring). Trả [] nếu không tìm được — không đoán."""
     _load()

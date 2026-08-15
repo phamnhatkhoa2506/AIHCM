@@ -28,6 +28,15 @@ from dense_volume_map import ROOT_MAP, VOLUME_NAME
 DONE_LOG = Path(__file__).resolve().parent.parent / "index" / "dense" / "upload_volume_done.log"
 ZIP_STAGING_DIR = Path(__file__).resolve().parent.parent / "index" / "dense" / "_upload_zips"
 
+# 2026-08-14: nguoi dung da tu chuan bi san 2 file zip cho 2 thu muc LON NHAT (khoi phai tu
+# nen, tiet kiem thoi gian dang ke) - NHUNG cau truc BEN TRONG khac quy uoc script tu tao (co
+# 1 lop thu muc boc ngoai KHAC ten muc tieu) -> can strip_levels=1 khi giai nen (xem
+# volume_extract_app.py::extract_zip). subfolder -> (duong dan zip co san, strip_levels).
+PREMADE_ZIPS: dict[str, str] = {
+    "L26_a-b_extracted": r"D:\Programming\AIHCM\data\Our\L26_a-b_extracted.zip",
+    "keyframe_output": r"D:\Programming\AIHCM\keyframe\data\output\output.zip",
+}
+
 
 def _done_folders() -> set[str]:
     if not DONE_LOG.exists():
@@ -58,6 +67,24 @@ def run() -> None:
     ZIP_STAGING_DIR.mkdir(parents=True, exist_ok=True)
     extract_fn = modal.Function.from_name("aic2026-volume-extract", "extract_zip")
 
+    # PIPELINE (2026-08-14, nguoi dung yeu cau): giai nen chay TREN Modal (khong dung tai
+    # nguyen local) - trong luc cho giai nen xong, may local co the ZIP+UPLOAD thu muc TIEP
+    # THEO song song. Dung extract_fn.spawn() (khong block) thay .remote() (block) - chi CHO
+    # ket qua cua lan giai nen TRUOC ngay truoc khi bat dau upload thu muc HIEN TAI (do 1 lan
+    # tre - "pending" o duoi).
+    pending: tuple | None = None  # (FunctionCall, subfolder, i)
+
+    def _wait_pending(log_f) -> None:
+        nonlocal pending
+        if pending is None:
+            return
+        call, sf, idx = pending
+        res = call.get()
+        print(f"[{idx}] XONG: {sf} ({res['n_files']} anh tren Volume)", file=sys.stderr)
+        log_f.write(sf + "\n")
+        log_f.flush()
+        pending = None
+
     with open(DONE_LOG, "a", encoding="utf-8") as log_f:
         for i, (local_root, subfolder) in enumerate(items, 1):
             if subfolder in done:
@@ -67,12 +94,25 @@ def run() -> None:
                 print(f"[{i}/{len(items)}] LOI: khong tim thay {local_root}", file=sys.stderr)
                 continue
 
-            zip_path = ZIP_STAGING_DIR / f"{subfolder}.zip"
-            print(f"[{i}/{len(items)}] Nen {subfolder} <- {local_root} ...", file=sys.stderr)
-            n_zipped = _zip_folder(local_root, zip_path)
-            zip_size_mb = zip_path.stat().st_size / (1024 * 1024)
-            print(f"[{i}/{len(items)}] Da nen {n_zipped} anh, {zip_size_mb:.1f} MB -> {zip_path}",
-                  file=sys.stderr)
+            premade = PREMADE_ZIPS.get(subfolder)
+            if premade:
+                zip_path = Path(premade)
+                strip_levels = 1
+                own_zip = False
+                if not zip_path.exists():
+                    print(f"[{i}/{len(items)}] LOI: khong tim thay zip co san {zip_path}",
+                          file=sys.stderr)
+                    sys.exit(1)
+                print(f"[{i}/{len(items)}] Dung zip co san: {zip_path}", file=sys.stderr)
+            else:
+                zip_path = ZIP_STAGING_DIR / f"{subfolder}.zip"
+                strip_levels = 0
+                own_zip = True
+                print(f"[{i}/{len(items)}] Nen {subfolder} <- {local_root} ...", file=sys.stderr)
+                n_zipped = _zip_folder(local_root, zip_path)
+                zip_size_mb = zip_path.stat().st_size / (1024 * 1024)
+                print(f"[{i}/{len(items)}] Da nen {n_zipped} anh, {zip_size_mb:.1f} MB -> {zip_path}",
+                      file=sys.stderr)
 
             volume_zip_rel = f"_zips/{subfolder}.zip"
             print(f"[{i}/{len(items)}] Upload zip len Volume ...", file=sys.stderr)
@@ -85,14 +125,21 @@ def run() -> None:
                       f"- chay lai script se tu resume tu day.", file=sys.stderr)
                 sys.exit(1)
 
-            print(f"[{i}/{len(items)}] Giai nen TREN Modal (Volume->Volume, nhanh) ...", file=sys.stderr)
-            res = extract_fn.remote(zip_rel_path=volume_zip_rel, dest_subfolder=f"{subfolder}/")
-            print(f"[{i}/{len(items)}] XONG: {subfolder} ({res['n_files']} anh tren Volume)",
-                  file=sys.stderr)
+            if own_zip:
+                zip_path.unlink(missing_ok=True)  # chi xoa zip TU TAO (staging), KHONG dung
+                # zip nguoi dung tu chuan bi san o duong dan goc cua ho
 
-            zip_path.unlink(missing_ok=True)  # xoa zip local, da co tren Volume roi
-            log_f.write(subfolder + "\n")
-            log_f.flush()
+            # cho lan giai nen TRUOC xong (thuong da xong tu lau vi upload/zip thu muc nay
+            # vua chay song song voi no) TRUOC KHI ghi DONE_LOG cho no.
+            _wait_pending(log_f)
+
+            print(f"[{i}/{len(items)}] Gui yeu cau giai nen TREN Modal (khong cho, chay ngam) ...",
+                  file=sys.stderr)
+            call = extract_fn.spawn(zip_rel_path=volume_zip_rel, dest_subfolder=f"{subfolder}/",
+                                     strip_levels=strip_levels)
+            pending = (call, subfolder, i)
+
+        _wait_pending(log_f)  # cho lan giai nen CUOI CUNG (khong con thu muc nao de chay song song)
 
     print("\nDa upload + giai nen xong TAT CA thu muc.", file=sys.stderr)
 

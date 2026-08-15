@@ -29,6 +29,25 @@ def _strip_accents(s: str) -> str:
     return s.replace("đ", "d")  # "đ" không tách qua NFD như các ký tự có dấu phụ khác
 
 
+def _ordered_words_match(needle: str, haystack_norm: str) -> bool:
+    """True nếu các TỪ trong `needle` (đã strip_accents) xuất hiện ĐÚNG THỨ TỰ trong
+    `haystack_norm` (SUBSEQUENCE theo từ — KHÔNG bắt buộc liền kề/sát nhau nữa).
+
+    SỬA (2026-08-15, theo yêu cầu người dùng - bug thật phát hiện qua test: query OCR "giá vàng
+    tăng" ra 0 kết quả dù có 169 dòng OCR thật chứa cả 3 từ đó, vì bản tin luôn chèn thêm chữ ở
+    giữa như "giá vàng NHÃN SÁNG 13/8 tăng" — thuật toán CŨ đòi hỏi 3 từ đứng SÁT NHAU tuyệt
+    đối, quá chặt so với văn phong thật). GIỮ NGUYÊN thứ tự (không phải bag-of-words) để tránh
+    khớp nhầm câu đảo nghĩa (vd "tăng giá vàng" != "giá vàng tăng"), chỉ nới lỏng yêu cầu SÁT
+    NHAU. So khớp theo TỪ NGUYÊN VẸN (==, không phải substring ký tự) — tự động tránh luôn bug
+    "áo" lọt vào giữa "báo" mà bản substring cũ phải dùng mẹo đệm khoảng trắng để né."""
+    needle_words = _strip_accents(needle).split()
+    if not needle_words:
+        return True
+    haystack_words = haystack_norm.split()
+    it = iter(haystack_words)
+    return all(nw in it for nw in needle_words)
+
+
 def by_metadata(
     authors: list[str] | None = None,
     date_from: str | None = None,
@@ -136,8 +155,7 @@ def by_text(
 
     df = ocr_index
     if ocr_text:
-        needle = f" {_strip_accents(ocr_text)} "
-        df = df[df["text_norm"].apply(lambda t: needle in f" {t} ")]
+        df = df[df["text_norm"].apply(lambda t: _ordered_words_match(ocr_text, t))]
     if ocr_region is not None and len(df):
         boxes = df[["ymin", "xmin", "ymax", "xmax"]].to_numpy(dtype=float)
         iou = resources._box_iou_matrix(boxes, np.array([ocr_region], dtype=float))

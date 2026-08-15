@@ -28,12 +28,17 @@ import pandas as pd
 from dotenv import load_dotenv
 from openai import OpenAI
 
-import resources
-from keyframe_images import read_keyframe_bytes
-from query_planner import planned_search
+from query_planner import extract_entities, planned_search
 from search import search
 from steplog import StepLog
 from tiers import tier3_temporal
+from tiers.dense_search import (
+    ASR_CONTEXT_WINDOW_SECONDS,
+    _fps_by_video,
+    _load_dense_asr,
+    apply_region_clip_rerank,
+    search_dense,
+)
 
 SUBMISSION_TOP_K = 100
 
@@ -71,41 +76,43 @@ load_dotenv()
 _nim_client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=os.environ["NVIDIA_NIM_API_KEY"])
 
 
-ASR_CONTEXT_WINDOW = 30  # so local_idx dem them 2 phia khi tim doan transcript gan frame -
-# loi noi KHONG dong bo chinh xac voi hinh (xem hoi thoai 2026-08-10), nen phai dem ro rong
-# hon la chi khop dung khoang local_idx_start..end cua doan ASR.
-
-
-def _asr_context_for(video_id: str, local_idx: int, window: int = ASR_CONTEXT_WINDOW) -> str:
-    """Tim cac doan transcript ASR (asr_text.parquet) GAN frame nay -> ghep lai thanh 1 doan
-    text ngan lam NGU CANH BO SUNG cho VQA (2026-08-10, viec A trong 3 viec ASR — nhieu cau
-    hoi Q&A hoi ve thu chi ton tai trong loi noi, khong suy ra duoc tu anh). Tra "" neu chua
-    co asr_text.parquet hoac khong co doan nao gan — KHONG lam VQA that bai, chi bo qua ngu
-    canh bo sung."""
-    asr_index = resources.get().asr_index
-    if asr_index is None:
+def _dense_asr_context_for(video_id: str, frame_id: int, window_seconds: float = ASR_CONTEXT_WINDOW_SECONDS) -> str:
+    """Tim cac doan transcript ASR (index/dense/asr_text.parquet, xem
+    offline/build_dense_asr_index.py) GAN frame nay -> ghep lai thanh 1 doan text ngan lam NGU
+    CANH BO SUNG cho VQA - BAN DENSE (2026-08-15, migrate theo yeu cau nguoi dung "sua Q&A theo
+    bo du lieu moi") - dung frame_idx_start/end (da tinh qua fps) thay vi local_idx_start/end
+    cua ban BTC cu. Tra "" neu chua co du lieu hoac khong co doan nao gan - KHONG lam VQA that
+    bai, chi bo qua ngu canh bo sung."""
+    asr = _load_dense_asr()
+    if asr is None:
         return ""
-    sub = asr_index[
-        (asr_index["video_id"] == video_id)
-        & (asr_index["local_idx_start"] - window <= local_idx)
-        & (asr_index["local_idx_end"] + window >= local_idx)
+    fps = _fps_by_video().get(video_id, 25.0)
+    window = int(round(window_seconds * fps))
+    sub = asr[
+        (asr["video_id"] == video_id)
+        & (asr["frame_idx_start"] - window <= frame_id)
+        & (asr["frame_idx_end"] + window >= frame_id)
     ]
     if sub.empty:
         return ""
-    return " ".join(sub.sort_values("local_idx_start")["text_raw"].tolist())
+    return " ".join(sub.sort_values("frame_idx_start")["text_raw"].tolist())
 
 
-def _vqa_answer(video_id: str, local_idx: int, question: str, asr_context: str = "") -> str:
+def _vqa_answer_dense(image_path: str, question: str, asr_context: str = "") -> str:
     """Hỏi thẳng câu hỏi lên 1 frame — KHÔNG qua Registry/gate (khác P1 ở tier4), vì Q&A cần
     trả lời tự do (màu sắc, số lượng...), không phải phân loại quan hệ đóng.
 
     NIM không đảm bảo structured output như vLLM tự host -> parse JSON có phòng thân (bỏ
     markdown fence nếu có), giống pattern đã dùng ở build_label_synonyms.py.
 
-    asr_context: transcript lời nói GẦN frame này (xem _asr_context_for) — đưa vào prompt làm
-    NGỮ CẢNH BỔ SUNG, không thay thế ảnh. Nhiều câu hỏi (số liệu đọc lên, tên được nhắc) chỉ
-    trả lời đúng được nếu có cả 2 nguồn — chỉ dùng ảnh sẽ đoán mò."""
-    img_bytes = read_keyframe_bytes(video_id, local_idx)
+    asr_context: transcript lời nói GẦN frame này (xem _dense_asr_context_for) — đưa vào prompt
+    làm NGỮ CẢNH BỔ SUNG, không thay thế ảnh. Nhiều câu hỏi (số liệu đọc lên, tên được nhắc) chỉ
+    trả lời đúng được nếu có cả 2 nguồn — chỉ dùng ảnh sẽ đoán mò.
+
+    image_path: đường dẫn file ảnh cục bộ (bộ dense nằm THẲNG trên đĩa - xem dense_meta.parquet
+    "path"), KHÁC BTC (phải đọc qua Keyframes_*.zip, xem keyframe_images.py)."""
+    with open(image_path, "rb") as f:
+        img_bytes = f.read()
     img_b64 = base64.b64encode(img_bytes).decode()
 
     system_content = (
@@ -153,38 +160,71 @@ def answer_qa(
     question: str,
     top_k: int = SUBMISSION_TOP_K,
     vqa_top_n: int = 5,
+    dense_model: str = "rrf",
+    use_region_clip_rerank: bool = True,
     log: StepLog | None = None,
     **filters,
 ) -> pd.DataFrame:
-    """Q&A -> DataFrame [video_id, frame_id, answer], đã xếp hạng.
+    """Q&A -> DataFrame [video_id, frame_id, path, score, answer, is_backfill], đã xếp hạng.
+
+    MIGRATE sang BỘ DENSE (2026-08-15, theo yêu cầu người dùng "sửa Q&A theo bộ dữ liệu mới")
+    — dùng search_dense() + extract_entities() (ĐÚNG pattern đường "1 câu" chính trong app.py)
+    thay vì planned_search() (BTC cũ). Ảnh đọc THẲNG từ đĩa local (row["path"]), ASR context từ
+    index/dense/asr_text.parquet (frame_idx đã remap qua fps — xem dense_search.py), thay vì
+    asr_index BTC cũ (local_idx).
+
+    use_region_clip_rerank (2026-08-15, thêm sau theo yêu cầu người dùng "tích hợp Rerank như
+    KIS"): QUAN TRỌNG — rerank PHẢI chạy TRƯỚC vòng lặp VQA bên dưới (không phải sau), vì
+    vqa_top_n chỉ hỏi VQA thật cho top-N sau khi đã xếp hạng lại — rerank sau sẽ hỏi nhầm ảnh.
 
     vqa_top_n: chỉ thật sự GỌI VQA cho top-N ứng viên đầu (tốn tiền thật/lần gọi) — các rank
     thấp hơn dùng lại câu trả lời của rank 1 (nếu rank 1 sai video/frame thì answer đúng hay
-    sai không quan trọng nữa, R-Score đã = 0 vì điều kiện video/frame không khớp trước).
+    sai không quan trọng nữa, R-Score đã = 0 vì điều kiện video/frame không khớp trước)."""
+    # loai cac tham so CHI danh cho pipeline BTC cu (khong ap dung cho search_dense)
+    filters.pop("use_suppression", None)
+    filters.pop("include_open_vocab", None)
+    filters.pop("ocr_region", None)
 
-    SUA 2026-08-07: doi tu search() thuan sang planned_search() - cung ly do nhu answer_kis()."""
-    r, _plan = planned_search(event_text, top_k=top_k, log=log, **filters)
-    r = r.rename(columns={"frame_idx": "frame_id"})
+    plan = extract_entities(event_text, log=log)
+    user_must_have = filters.pop("must_have_labels", None) or []
+    merged_must_have = list({*user_must_have, *plan["resolved_must_have_labels"]}) or None
+    user_min_count = filters.pop("min_count", None) or {}
+    merged_min_count = {**user_min_count, **plan["resolved_min_count"]} or None
+
+    # Region-CLIP rerank (giong het pattern KIS trong app.py) - can pool RONG HON top_k de
+    # rerank co gi ma chon, roi cat lai dung top_k SAU KHI rerank, TRUOC KHI vao vong lap VQA.
+    attributes = (plan.get("attributes") or []) if use_region_clip_rerank else []
+    search_top_k = top_k * 4 if attributes else top_k
+
+    r = search_dense(
+        event_text, dense_model, top_k=search_top_k,
+        must_have_labels=merged_must_have, min_count=merged_min_count,
+        audio_mentions=plan.get("audio_mentions") or None,
+        log=log, **filters,
+    )
+    if attributes and not r.empty:
+        r = apply_region_clip_rerank(r, attributes, top_k, log=log)
 
     answers = []
     best_answer = ""
     for i, row in r.iterrows():
         if i < vqa_top_n:
-            asr_context = _asr_context_for(row["video_id"], int(row["local_idx"]))
+            asr_context = _dense_asr_context_for(row["video_id"], int(row["frame_id"]))
             if log:
                 with log.timed(f"VQA — gọi NIM cho ứng viên #{i + 1} ({row['video_id']})") as set_detail:
-                    best_answer = _vqa_answer(row["video_id"], int(row["local_idx"]), question, asr_context)
+                    best_answer = _vqa_answer_dense(row["path"], question, asr_context)
                     detail = f'trả lời: "{best_answer}"'
                     if asr_context:
                         detail += f'  \n(có transcript ASR gần đó: "{asr_context[:150]}{"..." if len(asr_context) > 150 else ""}")'
                     set_detail(detail)
             else:
-                best_answer = _vqa_answer(row["video_id"], int(row["local_idx"]), question, asr_context)
+                best_answer = _vqa_answer_dense(row["path"], question, asr_context)
         answers.append(best_answer)
     r["answer"] = answers
-    # giữ local_idx/pts_time/score thêm (không bắt buộc theo định dạng nộp bài, nhưng tiện cho
-    # UI hiển thị ảnh + debug) — 3 cột chính vẫn là video_id/frame_id/answer.
-    return r[["video_id", "frame_id", "local_idx", "pts_time", "score", "answer"]].reset_index(drop=True)
+    cols = ["video_id", "frame_id", "path", "score", "answer"]
+    if "is_backfill" in r.columns:
+        cols.append("is_backfill")
+    return r[cols].reset_index(drop=True)
 
 
 if __name__ == "__main__":

@@ -16,16 +16,25 @@ objects_index.parquet/label_translate.py hien co).
 Chay thu (dev): modal serve owlv2_app.py
 Deploy that:    modal deploy owlv2_app.py
 """
+from pathlib import Path as _Path
+
 import modal
 
 MODEL_NAME = "google/owlv2-base-patch16-ensemble"
-# 2026-08-14: da chan doan + FIX nghen co chai LOCAL CPU bang Modal Volume (xem duoi) - gio
-# Modal GPU container that su la yeu to gioi han toc do, tra ve 10 (toi da tai khoan cho phep).
+_LABEL_VI_PATH = _Path(__file__).resolve().parent.parent.parent / "index" / "label_vi.json"
+# 2026-08-14: da thu MAX_CONTAINERS=5 (nghi giam container giam nghen Volume) - KET QUA: TONG
+# toc do CHAM HON 10 container (485 vs 544-594 anh/phut), du per-container co nhanh hon. Giu
+# lai 10 - la cau hinh tot nhat da tim duoc, nghen Volume dung chung la dac tinh Modal, chap
+# nhan (~544-594 anh/phut ca corpus, khong con toi uu them duoc tu code).
 MAX_CONTAINERS = 10
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("torch", "torchvision", "transformers", "pillow", "accelerate")
+    # 2026-08-14: nhung san label_vi.json vao image - de load() doc 1 LAN duy nhat trong
+    # container, khong con phai NHAN qua tham so + tokenize lai moi lan goi (xem duoi -
+    # day chinh la nguyen nhan cham that su, xem docstring detect_batch_from_volume).
+    .add_local_file(str(_LABEL_VI_PATH), "/root/label_vi.json")
 )
 
 hf_cache_vol = modal.Volume.from_name("aic2026-hf-cache", create_if_missing=True)
@@ -42,6 +51,10 @@ app = modal.App("aic2026-owlv2")
 @app.cls(
     image=image,
     gpu="A10G",
+    # 2026-08-14: image_preprocess (resize/normalize 64 anh) chiem 2.6-2.7s/batch tren CPU
+    # mac dinh (~1 core) - tang len cpu=4 giam xuong con ~0.5s (5x nhanh hon). Da thu cpu=8,
+    # KHONG cai thien them (image_preprocess/forward/postprocess deu giu nguyen) - giu 4.
+    cpu=4.0,
     max_containers=MAX_CONTAINERS,
     scaledown_window=5 * 60,
     # BUG THAT (2026-08-14, lap lai nhieu lan): .map(order_outputs=True) bi CHAN boi dung 1
@@ -58,6 +71,7 @@ app = modal.App("aic2026-owlv2")
 class OWLv2Detector:
     @modal.enter()
     def load(self):
+        import json
         import os
 
         import torch
@@ -69,9 +83,7 @@ class OWLv2Detector:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # FP16 (2026-08-14, toc do 1000 anh/phut qua cham - nguoi dung yeu cau toi uu): giam
         # nua bo nho + tang toc tren A10G (tensor core toi uu fp16), rui ro thap cho detection
-        # (khong nhay cam chinh xac so nhu OCR ky tu). Batch size lon hon KHONG giup (da do
-        # thuc te: batch 32 cham hon batch 8, chi phi chinh la encode 514 nhan/anh, khong phai
-        # overhead batch).
+        # (khong nhay cam chinh xac so nhu OCR ky tu).
         self.use_fp16 = self.device == "cuda"
         if self.use_fp16:
             self.model = self.model.half()
@@ -79,6 +91,19 @@ class OWLv2Detector:
         # dam bao thay du lieu moi nhat upload len Volume (container co the mount truoc khi
         # upload xong neu warm san tu deploy cu).
         dense_kf_vol.reload()
+
+        # NGUYEN NHAN CHAM THAT SU (2026-08-14, do bang timing thuc te): Owlv2Processor.__call__
+        # voi text=[[514 nhan]]*N (N anh) goi self.tokenizer() RIENG cho TUNG anh trong batch
+        # (xem source processing_owlv2.py) - du 514 nhan GIONG HET nhau moi lan, N=64 tuc la
+        # tokenize lai 64 LAN LAP LAI VO ICH. Do thuc te: buoc nay chiem 3.3-3.5s/64-anh, LON
+        # HON CA forward GPU (1.44s)! FIX: tokenize 514 nhan CHI 1 LAN o day (load(), moi container
+        # goi 1 lan duy nhat khi khoi dong), moi batch chi REPEAT tensor (torch op re, khong
+        # goi lai tokenizer strings).
+        with open("/root/label_vi.json", encoding="utf-8") as f:
+            self.labels = sorted(json.load(f).keys())
+        text_encoding = self.processor(text=[self.labels], return_tensors="pt")
+        self.text_input_ids = text_encoding["input_ids"]  # (514, seq_len)
+        self.text_attention_mask = text_encoding["attention_mask"]
 
     @modal.method()
     def detect_batch(
@@ -127,12 +152,13 @@ class OWLv2Detector:
 
     @modal.method()
     def detect_batch_from_volume(
-        self, rel_paths: list[str], labels: list[str], threshold: float = 0.15
+        self, rel_paths: list[str], threshold: float = 0.15
     ) -> list[list[dict]]:
         """NHU detect_batch nhung doc anh THANG TU Modal Volume (khong nhan bytes qua tham so)
         - rel_paths la duong dan tuong doi trong Volume (xem share/dense_volume_map.py), vd
         "L21_extracted/L21/L21_V009/shot0214_f0020910.jpg". Loai bo hoan toan buoc doc file +
-        gui bytes tu may local -> khong con nghen co chai CPU/mang local (da chan doan 2026-08-14)."""
+        gui bytes tu may local -> khong con nghen co chai CPU/mang local (da chan doan 2026-08-14).
+        KHONG con nhan tham so labels - da tokenize san 1 lan trong load() (xem do o do)."""
         import io
         from pathlib import Path
 
@@ -144,9 +170,18 @@ class OWLv2Detector:
             full_path = Path(DENSE_VOLUME_MOUNT) / rel
             with open(full_path, "rb") as f:
                 images.append(Image.open(io.BytesIO(f.read())).convert("RGB"))
-        text_queries = [labels] * len(images)
+        n = len(images)
+        text_queries = [self.labels] * n  # chi de xay dung text_labels cho post_process, KHONG tokenize lai
 
-        inputs = self.processor(text=text_queries, images=images, return_tensors="pt").to(self.device)
+        pixel_values = self.processor.image_processor(images=images, return_tensors="pt").pixel_values
+        input_ids = self.text_input_ids.repeat(n, 1)  # (514,L) -> (n*514,L), REPEAT tensor re,
+        attention_mask = self.text_attention_mask.repeat(n, 1)  # khong goi lai tokenizer
+
+        inputs = {
+            "pixel_values": pixel_values.to(self.device),
+            "input_ids": input_ids.to(self.device),
+            "attention_mask": attention_mask.to(self.device),
+        }
         if self.use_fp16:
             inputs["pixel_values"] = inputs["pixel_values"].half()
         with torch.no_grad():
@@ -185,3 +220,27 @@ def test():
     detector = OWLv2Detector()
     results = detector.detect_batch.remote([img_bytes], ["cat", "remote control", "couch", "dog"])
     print(results)
+
+
+@app.local_entrypoint()
+def diag_timing():
+    """modal run owlv2_app.py::diag_timing — do timing thuc te batch=64 tren Volume, 3 lan
+    lien tiep (cold + 2 warm) de xem co on dinh khong (2026-08-14, tim nguyen nhan cham)."""
+    import sys
+    import time
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "share"))
+    import pandas as pd
+    from config import INDEX_DIR
+    from dense_volume_map import to_volume_rel_path
+
+    meta = pd.read_parquet(INDEX_DIR / "dense" / "dense_meta.parquet")
+    sample = meta.iloc[::2000].head(64)
+    rel_paths = [to_volume_rel_path(p) for p in sample["path"]]
+
+    detector = OWLv2Detector()
+    for i in range(3):
+        t0 = time.time()
+        detector.detect_batch_from_volume.remote(rel_paths)
+        print(f"=== Lan {i+1}: {time.time()-t0:.2f}s ===")
