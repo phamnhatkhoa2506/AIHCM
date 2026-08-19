@@ -23,6 +23,9 @@ import modal
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))  # module dung chung o goc v3/
+from config import OUR_DATA_ROOT  # noqa: E402
+
 BATCH_SIZE = 32
 N_READ_WORKERS = 16
 
@@ -133,7 +136,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, choices=list(MODEL_APP))
     ap.add_argument("--src", required=True, help="thu muc chua <video_id>/*.jpg")
-    ap.add_argument("--out", default=r"D:\Programming\AIHCM\data\Our\embeddings")
+    ap.add_argument("--out", default=str(OUR_DATA_ROOT / "embeddings"))
     ap.add_argument("--limit", type=int, default=None, help="chi encode N anh dau (test nhanh)")
     args = ap.parse_args()
     run(args.model, Path(args.src), Path(args.out), limit=args.limit)

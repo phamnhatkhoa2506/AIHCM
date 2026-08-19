@@ -31,15 +31,15 @@ import faiss
 import numpy as np
 import pandas as pd
 
-from config import INDEX_DIR
+from config import DENSE_DIR, DENSE_META_PATH, KEYFRAME_OUTPUT_ROOT, OUR_DATA_ROOT
 
-OUR_EMB_ROOT = Path(r"D:\Programming\AIHCM\data\Our\embeddings")
-KEYFRAME_EMB_ROOT = Path(r"D:\Programming\AIHCM\keyframe\data\output\embeddings")
+# 2026-08-19: goc duong dan chuyen vao config.py (OUR_DATA_ROOT/KEYFRAME_OUTPUT_ROOT), KHONG
+# con hardcode "D:\..." o day.
+OUR_EMB_ROOT = OUR_DATA_ROOT / "embeddings"
+KEYFRAME_EMB_ROOT = KEYFRAME_OUTPUT_ROOT / "embeddings"
 
 OUR_FOLDERS = ["L21", "L22", "L23", "L24", "L25", "L26", "L27", "L28", "L29", "L30"]
 MODELS = ["siglip", "pe_core", "beit3"]
-
-DENSE_DIR = INDEX_DIR / "dense"
 
 
 def _load_source(emb_dir: Path, model: str) -> tuple[np.ndarray, pd.DataFrame]:
@@ -84,12 +84,12 @@ def main() -> None:
         print(f"  TONG: {full_matrix.shape} -> {DENSE_DIR / f'{model}_matrix.npy'}", file=sys.stderr)
 
         if model == MODELS[0]:
-            full_meta.to_parquet(DENSE_DIR / "dense_meta.parquet", index=False)
-            print(f"  meta: {len(full_meta)} dong -> {DENSE_DIR / 'dense_meta.parquet'}", file=sys.stderr)
+            full_meta.to_parquet(DENSE_META_PATH, index=False)
+            print(f"  meta: {len(full_meta)} dong -> {DENSE_META_PATH}", file=sys.stderr)
         else:
             # XAC MINH thu tu giong het model dau (cung nguon, cung _scan() deterministic) -
             # KHONG tin suong, so sanh video_id+frame_idx tung dong.
-            ref = pd.read_parquet(DENSE_DIR / "dense_meta.parquet")
+            ref = pd.read_parquet(DENSE_META_PATH)
             if not (ref["video_id"].values == full_meta["video_id"].values).all() or \
                not (ref["frame_idx"].values == full_meta["frame_idx"].values).all():
                 raise ValueError(
@@ -98,7 +98,7 @@ def main() -> None:
                 )
             print(f"  thu tu khop voi {MODELS[0]} - dung chung dense_meta.parquet", file=sys.stderr)
 
-    print(f"\nXONG. {len(pd.read_parquet(DENSE_DIR / 'dense_meta.parquet'))} anh tong cong.", file=sys.stderr)
+    print(f"\nXONG. {len(pd.read_parquet(DENSE_META_PATH))} anh tong cong.", file=sys.stderr)
 
 
 if __name__ == "__main__":

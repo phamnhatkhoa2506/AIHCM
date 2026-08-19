@@ -232,10 +232,10 @@ def diag_timing():
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "share"))
     import pandas as pd
-    from config import INDEX_DIR
+    from config import DENSE_META_PATH
     from dense_volume_map import to_volume_rel_path
 
-    meta = pd.read_parquet(INDEX_DIR / "dense" / "dense_meta.parquet")
+    meta = pd.read_parquet(DENSE_META_PATH)
     sample = meta.iloc[::2000].head(64)
     rel_paths = [to_volume_rel_path(p) for p in sample["path"]]
 

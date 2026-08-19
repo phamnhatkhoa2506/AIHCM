@@ -25,10 +25,8 @@ import sys
 
 import modal
 
-from config import INDEX_DIR
+from config import DENSE_DIR, DENSE_META_PATH, INDEX_DIR
 
-DENSE_DIR = INDEX_DIR / "dense"
-DENSE_META_PATH = DENSE_DIR / "dense_meta.parquet"
 MODELS = ("siglip", "pe_core", "beit3")
 
 VOLUME_NAME = "aic2026-dense-index"

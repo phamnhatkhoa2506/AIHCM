@@ -12,7 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_dense_embeddings import run  # noqa: E402
 
-OUR_ROOT = Path(r"D:\Programming\AIHCM\data\Our")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))  # module dung chung o goc v3/
+from config import OUR_DATA_ROOT as OUR_ROOT  # noqa: E402
 
 # (ten thu muc _extracted, ten thu muc con ben trong) - da kiem tra thuc te (2026-08-13)
 FOLDERS = [

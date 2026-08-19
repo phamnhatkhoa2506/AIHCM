@@ -14,9 +14,15 @@ rồi tải data/output/ về sau khi xong.
 
 Deploy: modal deploy dense_keyframe_app.py
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "share"))  # offline/modal_infra/ -> v3/share/
+from config import KEYFRAME_REPO_ROOT  # noqa: E402
+
 import modal
 
-REPO_LOCAL_PATH = r"D:\Programming\AIHCM\keyframe"
+REPO_LOCAL_PATH = str(KEYFRAME_REPO_ROOT)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")

@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from config import INDEX_DIR
+from config import DENSE_DIR, DENSE_META_PATH, INDEX_DIR
 
 DENSE_DIR = INDEX_DIR / "dense"
 OBJECTS_INDEX_PATH = DENSE_DIR / "objects_index.parquet"

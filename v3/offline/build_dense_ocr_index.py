@@ -36,11 +36,9 @@ import pandas as pd
 
 from atomic_io import atomic_write_parquet
 
-from config import INDEX_DIR
+from config import DENSE_DIR, DENSE_META_PATH, INDEX_DIR
 from tiers.tier1_filter import _strip_accents
 
-DENSE_DIR = INDEX_DIR / "dense"
-DENSE_META_PATH = DENSE_DIR / "dense_meta.parquet"
 OUT_PATH = DENSE_DIR / "ocr_text.parquet"
 DONE_PATH = DENSE_DIR / "ocr_dense_done.jsonl"
 

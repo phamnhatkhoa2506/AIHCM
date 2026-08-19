@@ -3,6 +3,16 @@ from pathlib import Path
 
 DATA_ROOT = Path(r"D:\Programming\AIHCM\data\Competition")
 
+# 2026-08-19 (theo yeu cau nguoi dung, nhanh git khac: "chạy mọi thứ local... path thì bạn
+# đừng hardcode, bỏ vào file config hết") - goc du lieu "Our" (tu trich, dense corpus,
+# offline/*.py + share/dense_volume_map.py dung) va thu muc output cua repo keyframe rieng
+# (dung chung cho build/upload embeddings, xem cac script offline/*.py). TRUOC DAY hardcode
+# rai rac trong nhieu file (dense_volume_map.py, offline/upload_dense_to_volume.py,
+# offline/merge_dense_embeddings.py...) - gom VE 1 CHO de doi may/o dia chi can sua 1 dong.
+OUR_DATA_ROOT = Path(r"D:\Programming\AIHCM\data\Our")
+KEYFRAME_REPO_ROOT = Path(r"D:\Programming\AIHCM\keyframe")
+KEYFRAME_OUTPUT_ROOT = KEYFRAME_REPO_ROOT / "data" / "output"
+
 # File nay nam trong share/ (v3/share/config.py) - .parent.parent moi la goc v3/, noi thuc su
 # chua index/ va .cache/. Di chuyen file nay sang thu muc khac PHAI xem lai 2 dong nay.
 _V3_ROOT = Path(__file__).resolve().parent.parent
@@ -18,6 +28,16 @@ INDEX_META_PATH = INDEX_DIR / "meta.parquet"
 INDEX_FAISS_PATH = INDEX_DIR / "clip.faiss"
 VIDEO_METADATA_PATH = INDEX_DIR / "video_metadata.parquet"
 OBJECTS_INDEX_PATH = INDEX_DIR / "objects_index.parquet"
+
+# 2026-08-19 (theo yeu cau nguoi dung: "d:\...\index\dense\dense_meta.parquet ... mình thấy
+# chưa có trong config") - truoc day DENSE_DIR va cac duong dan con (dense_meta.parquet,
+# <model>_matrix.npy, <model>_faiss.index...) dinh nghia RIENG trong
+# share/tiers/dense_search.py (DENSE_DIR = INDEX_DIR / "dense", roi noi tiep tung file) -
+# chuyen goc DENSE_DIR ve day, dense_search.py doi sang import lai (khong con dinh nghia
+# rieng). Cac file *_matrix.npy/*_faiss.index/dense_meta.parquet van dat TEN DUNG chuan cu
+# (khong doi ten file that tren dia), chi gom DUONG DAN GOC ve 1 cho.
+DENSE_DIR = INDEX_DIR / "dense"
+DENSE_META_PATH = DENSE_DIR / "dense_meta.parquet"
 
 # Cache model HuggingFace/sentence-transformers ngay trong workspace này, không dùng
 # %USERPROFILE%\.cache mặc định.

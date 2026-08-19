@@ -9,9 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))
 import json
 import modal
 import pandas as pd
-from config import INDEX_DIR
+from config import DENSE_META_PATH, INDEX_DIR
 
-DENSE_META_PATH = INDEX_DIR / "dense" / "dense_meta.parquet"
 LABEL_VI_PATH = INDEX_DIR / "label_vi.json"
 
 with open(LABEL_VI_PATH, encoding="utf-8") as f:

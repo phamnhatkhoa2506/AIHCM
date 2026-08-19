@@ -9,9 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))
 import modal
 import pandas as pd
-from config import INDEX_DIR
+from config import DENSE_META_PATH, INDEX_DIR
 
-DENSE_META_PATH = INDEX_DIR / "dense" / "dense_meta.parquet"
 
 meta = pd.read_parquet(DENSE_META_PATH)
 sample = meta.iloc[::1000].head(16)  # 16 anh rai rac, tranh cache/trung anh

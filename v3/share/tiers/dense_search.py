@@ -50,7 +50,7 @@ import faiss
 import numpy as np
 import pandas as pd
 
-from config import INDEX_DIR
+from config import DENSE_DIR, DENSE_META_PATH, INDEX_DIR
 from label_translate import resolve as resolve_label_vi
 from local_text_encoders import ENCODERS
 from tiers.tier1_filter import (
@@ -64,7 +64,6 @@ from tiers.tier1_filter import (
     match_words,
 )
 
-DENSE_DIR = INDEX_DIR / "dense"
 OCR_TEXT_PATH = DENSE_DIR / "ocr_text.parquet"  # xem build_dense_ocr_index.py - schema:
 # video_id, frame_idx, text_raw, text_norm, ymin/xmin/ymax/xmax, score. KHAC ocr_text.parquet
 # sparse (co local_idx_start/end, da gom "run") - o day 1 dong/dong chu/frame THANG, khong gom,
@@ -80,7 +79,7 @@ RRF_K = 60  # hang so chuan trong cong thuc RRF: 1/(k+rank) - k=60 la gia tri ph
 
 @lru_cache(maxsize=None)
 def _load_dense_meta() -> pd.DataFrame:
-    return pd.read_parquet(DENSE_DIR / "dense_meta.parquet")
+    return pd.read_parquet(DENSE_META_PATH)
 
 
 @lru_cache(maxsize=None)

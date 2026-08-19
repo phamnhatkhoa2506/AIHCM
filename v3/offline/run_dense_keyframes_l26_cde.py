@@ -14,10 +14,12 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))  # module dung chung o goc v3/
+from config import DATA_ROOT, KEYFRAME_OUTPUT_ROOT  # noqa: E402
+
 import modal
 
-DATA_ROOT = Path(r"D:\Programming\AIHCM\data\Competition")
-LOCAL_OUTPUT_DIR = Path(r"D:\Programming\AIHCM\keyframe\data\output")
+LOCAL_OUTPUT_DIR = KEYFRAME_OUTPUT_ROOT
 
 TARGET_ZIPS = {
     "Videos_L26_c": DATA_ROOT / "Videos_L26_c.zip",

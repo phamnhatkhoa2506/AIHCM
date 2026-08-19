@@ -27,11 +27,11 @@ import unicodedata
 
 import pandas as pd
 
-from config import INDEX_DIR
+from config import DENSE_DIR, INDEX_DIR
 
 ASR_NEW_PATH = INDEX_DIR / "asr_text_new.parquet"
 META_PATH = INDEX_DIR / "meta.parquet"  # video-level fps, dung chung cho ca BTC lan dense
-OUT_PATH = INDEX_DIR / "dense" / "asr_text.parquet"
+OUT_PATH = DENSE_DIR / "asr_text.parquet"
 
 
 def _strip_accents(s: str) -> str:

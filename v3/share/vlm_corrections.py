@@ -14,9 +14,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import INDEX_DIR
+from config import DENSE_DIR
 
-VLM_APPROVED_OCR_PATH = INDEX_DIR / "dense" / "vlm_approved_ocr.jsonl"
+VLM_APPROVED_OCR_PATH = DENSE_DIR / "vlm_approved_ocr.jsonl"
 
 
 def save_approved_vlm_text(video_id: str, frame_id: int, text: str, model: str, image_path: str) -> None:

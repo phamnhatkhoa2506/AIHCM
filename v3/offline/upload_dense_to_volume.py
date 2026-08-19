@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))
 import modal
+from config import KEYFRAME_OUTPUT_ROOT, OUR_DATA_ROOT
 from dense_volume_map import ROOT_MAP, VOLUME_NAME
 
 DONE_LOG = Path(__file__).resolve().parent.parent / "index" / "dense" / "upload_volume_done.log"
@@ -33,8 +34,8 @@ ZIP_STAGING_DIR = Path(__file__).resolve().parent.parent / "index" / "dense" / "
 # 1 lop thu muc boc ngoai KHAC ten muc tieu) -> can strip_levels=1 khi giai nen (xem
 # volume_extract_app.py::extract_zip). subfolder -> (duong dan zip co san, strip_levels).
 PREMADE_ZIPS: dict[str, str] = {
-    "L26_a-b_extracted": r"D:\Programming\AIHCM\data\Our\L26_a-b_extracted.zip",
-    "keyframe_output": r"D:\Programming\AIHCM\keyframe\data\output\output.zip",
+    "L26_a-b_extracted": str(OUR_DATA_ROOT / "L26_a-b_extracted.zip"),
+    "keyframe_output": str(KEYFRAME_OUTPUT_ROOT / "output.zip"),
 }
 
 

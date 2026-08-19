@@ -30,11 +30,9 @@ from pathlib import Path
 import modal
 import pandas as pd
 
-from config import INDEX_DIR
+from config import DENSE_DIR, DENSE_META_PATH, INDEX_DIR
 from dense_volume_map import to_volume_rel_path
 
-DENSE_DIR = INDEX_DIR / "dense"
-DENSE_META_PATH = DENSE_DIR / "dense_meta.parquet"
 SHARD_DIR = DENSE_DIR / "shards"
 MAIN_DONE_PATH = DENSE_DIR / "objects_dense_done.jsonl"  # de biet anh nao MAIN driver da xong
 
