@@ -23,10 +23,11 @@ from query_planner import extract_entities
 from steplog import StepLog
 from submission_pipeline import DEFAULT_VLM_OCR_MODEL, VLM_OCR_MODELS, answer_qa, vlm_read_text
 from tiers import dense_temporal
-from tiers.dense_search import DEFAULT_SCORE_ALGORITHM, SCORE_ALGORITHMS, apply_region_clip_rerank, search_dense
+from tiers.dense_search import DEFAULT_SCORE_ALGORITHM, SCORE_ALGORITHMS, apply_region_clip_rerank, search_dense, _fps_by_video
 from tiers.tier1_filter import DEFAULT_OCR_ALGORITHM, OCR_MATCH_ALGORITHMS
-from video_clip import get_shot_clip_bytes, get_fixed_window_clip_bytes
+from video_clip import get_shot_clip_bytes, get_fixed_window_clip_bytes, extract_single_frame
 from vlm_corrections import save_approved_vlm_text
+from trake_corrections import save_trake_correction
 
 st.set_page_config(page_title="AIC 2026", layout="wide")
 
@@ -165,6 +166,67 @@ def _render_vlm_ocr_verify(image_path: str, video_id: str, frame_id: int, widget
                     st.caption(f"✅ Đã duyệt lúc {st.session_state[approved_key]} — đã lưu vào hệ thống")
             elif already_approved:
                 st.caption(f"✅ Đã duyệt lúc {already_approved} — đã lưu vào hệ thống")
+
+
+def _render_trake_frame_tune(
+    video_id: str, anchor_index: int, anchor_text: str,
+    cur_frame_id: int, cur_pts_time: float, widget_key: str,
+) -> None:
+    """Nút "🎯 Tinh chỉnh" dưới mỗi mốc TRAKE (2026-08-20, theo yêu cầu người dùng: "chức năng
+    xem video của kết quả temporal để tinh chỉnh lại frame sau khi đã có kết quả... có chức
+    năng approve frame mong muốn khi đã kiểm duyệt qua video. Video phải dễ dàng thao tác").
+
+    Popover (cùng pattern lazy st.popover(on_change="rerun") với _render_vlm_ocr_verify — xem
+    docstring hàm đó cho lý do chọn popover thay vì CSS/container thủ công) chứa 2 lớp thao tác:
+      1. VIDEO xem tự do quanh mốc (st.video + start_time, kéo-thả bằng control gốc trình
+         duyệt — "dễ dàng thao tác" theo đúng yêu cầu) để ĐỊNH VỊ đúng khoảnh khắc.
+      2. Sau khi định vị được, dùng st.slider (bước 0.2s, mịn hơn nhiều so với mật độ mẫu dense
+         gốc ~0.55-2.65s/frame) + ẢNH XEM TRƯỚC LIVE (extract_single_frame — trích ĐÚNG frame
+         tại giây đó, không giới hạn theo các frame đã có sẵn trong dense_meta.parquet) để
+         CHỐT chính xác 1 frame.
+
+    "✅ Duyệt frame này": (a) ghi vào trake_corrections.TRAKE_APPROVED_PATH (lưu tham khảo, xem
+    docstring file đó), (b) override HIỂN THỊ ngay trong phiên hiện tại qua
+    st.session_state.trake_frame_overrides[(video_id, anchor_index)] — áp dụng NGAY cho card
+    đang xem mà KHÔNG cần chạy lại search (kết quả gốc trên đĩa/ranking không đổi, chỉ đổi
+    những gì đang HIỂN THỊ cho người dùng)."""
+    pop = st.popover("🎯", help="Tinh chỉnh lại frame của mốc này (xem video, chọn đúng khoảnh khắc)",
+                      on_change="rerun", key=f"tunepop_{widget_key}")
+    if not pop.open:
+        return
+    with pop:
+        st.markdown("**Xem video quanh mốc này** _(kéo-thả để tìm đúng khoảnh khắc)_")
+        window_start = max(0.0, cur_pts_time - 10.0)
+        try:
+            st.video(get_fixed_window_clip_bytes(video_id, cur_frame_id, window_seconds=20.0),
+                     start_time=int(window_start))
+        except Exception as e:
+            st.error(f"Không phát được video ({e})")
+
+        slider_key = f"tuneslider_{widget_key}"
+        if slider_key not in st.session_state:
+            st.session_state[slider_key] = cur_pts_time
+        t_pick = st.slider(
+            "Thời điểm chính xác (giây)", min_value=max(0.0, cur_pts_time - 10.0),
+            max_value=cur_pts_time + 10.0, step=0.2, key=slider_key,
+        )
+
+        try:
+            preview_path = extract_single_frame(video_id, t_pick)
+            st.image(str(preview_path), caption=f"t={t_pick:.1f}s")
+        except Exception as e:
+            st.error(f"Không trích được frame xem trước ({e})")
+            preview_path = None
+
+        if preview_path is not None and st.button("✅ Duyệt frame này", key=f"tuneapprove_{widget_key}"):
+            fps = _fps_by_video().get(video_id, 25.0)
+            new_frame_id = round(t_pick * fps)
+            save_trake_correction(video_id, anchor_index, anchor_text,
+                                   cur_frame_id, new_frame_id, t_pick)
+            st.session_state.setdefault("trake_frame_overrides", {})[(video_id, anchor_index)] = {
+                "frame_id": new_frame_id, "pts_time": t_pick, "path": str(preview_path),
+            }
+            st.success(f"✅ Đã duyệt frame `{new_frame_id}` (t={t_pick:.1f}s) cho mốc này.")
 
 
 def _render_floating_video_player() -> None:
@@ -819,28 +881,43 @@ if "last_search" in st.session_state:
             st.markdown(timeline_html, unsafe_allow_html=True)
 
             cols = st.columns(len(_r_anchors))
+            _overrides = st.session_state.get("trake_frame_overrides", {})
             for i, anchor in enumerate(_r_anchors):
                 with cols[i]:
+                    # 2026-08-20 (theo yeu cau nguoi dung: "tinh chỉnh lại frame... approve
+                    # frame mong muốn") - neu moc nay DA duoc duyet qua _render_trake_frame_tune
+                    # (xem ham do), dung frame/path DA CHINH thay cho ket qua goc tu thuat toan -
+                    # CHI anh huong HIEN THI trong phien nay, KHONG ghi de len ket qua that/xep
+                    # hang (van luu rieng qua trake_corrections.py de tham khao/cai thien sau).
+                    _ov = _overrides.get((row["video_id"], i))
+                    _frame_id = _ov["frame_id"] if _ov else int(row[f"anchor{i}_frame_id"])
+                    _pts_time = _ov["pts_time"] if _ov else float(row[f"anchor{i}_pts_time"])
+                    _img_path = _ov["path"] if _ov else row[f"anchor{i}_path"]
+
                     _trake_widget_key = f"trake_{row['video_id']}_{i}_{int(row[f'anchor{i}_frame_id'])}"
                     # 2026-08-15 (migrate sang bo dense): doc anh THANG tu row[f"anchor{i}_path"]
                     # (dia local), khong qua Keyframes_*.zip cua BTC nua (xem tiers/dense_temporal.py).
-                    _render_image_with_vlm_overlay(row[f"anchor{i}_path"], _trake_widget_key)
+                    _render_image_with_vlm_overlay(_img_path, _trake_widget_key)
                     extra = []
                     if anchor.get("must_have_labels"):
                         extra.append(f"nhãn: {anchor['must_have_labels']}")
                     if anchor.get("ocr_text"):
                         extra.append(f"OCR: \"{anchor['ocr_text']}\"")
+                    if _ov:
+                        extra.append("✅ đã tinh chỉnh thủ công")
                     extra_str = f"  \n_{' · '.join(extra)}_" if extra else ""
                     st.caption(
                         f"{anchor['text']}{extra_str}  \n"
-                        f"frame `{int(row[f'anchor{i}_frame_id'])}` · t={row[f'anchor{i}_pts_time']:.2f}s"
+                        f"frame `{_frame_id}` · t={_pts_time:.2f}s"
                     )
-                    _col_vid, _col_vlm = st.columns(2, vertical_alignment="bottom")
+                    _col_vid, _col_vlm, _col_tune = st.columns(3, vertical_alignment="bottom")
                     with _col_vid:
-                        _render_video_toggle(row["video_id"], int(row[f"anchor{i}_frame_id"]), _trake_widget_key, fixed_window=True)
+                        _render_video_toggle(row["video_id"], _frame_id, _trake_widget_key, fixed_window=True)
                     with _col_vlm:
-                        _render_vlm_ocr_verify(
-                            row[f"anchor{i}_path"], row["video_id"], int(row[f"anchor{i}_frame_id"]), _trake_widget_key
+                        _render_vlm_ocr_verify(_img_path, row["video_id"], _frame_id, _trake_widget_key)
+                    with _col_tune:
+                        _render_trake_frame_tune(
+                            row["video_id"], i, anchor["text"], _frame_id, _pts_time, _trake_widget_key
                         )
             st.divider()
     else:

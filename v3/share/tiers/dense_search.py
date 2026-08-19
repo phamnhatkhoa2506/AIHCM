@@ -44,6 +44,7 @@ merge_dense_embeddings.py va PDF muc 3) - dung THANG duoc, khong can quy doi.
 from __future__ import annotations
 
 import contextlib
+from collections import defaultdict as _defaultdict
 from functools import lru_cache
 
 import faiss
@@ -468,20 +469,32 @@ def _ocr_frame_words() -> dict[tuple[str, int], list[str]]:
 def _ocr_rows_by_frame() -> dict[tuple[str, int], list[dict]]:
     """(video_id, frame_idx) -> list[{"text_norm","ymin","xmin","ymax","xmax"}] CHUA sap xep -
     du lieu THO de _ocr_frame_words_clustered() cluster LAZY tung frame 1 (KHONG groupby toan
-    bo corpus - qua cham, xem docstring _ocr_frame_words). Build 1 LAN (dict comprehension tu
-    itertuples, nhanh hon groupby O(n) don gian), tra cuu O(1) sau do. _ocr_frame_words() DUNG
-    LAI ket qua nay (khong doc parquet rieng) - CHI 1 lan quet file duy nhat cho ca 2 cache."""
+    bo corpus - qua cham, xem docstring _ocr_frame_words). Build 1 LAN, tra cuu O(1) sau do.
+    _ocr_frame_words() DUNG LAI ket qua nay (khong doc parquet rieng) - CHI 1 lan quet file
+    duy nhat cho ca 2 cache.
+
+    2026-08-20 (toi uu, theo yeu cau nguoi dung "lọc thô... chạy khá chậm" - do that qua step
+    log: buoc nay (lan dau/phien, sau do @lru_cache o tren lam no tuc thi cac lan sau) ton
+    ~14.35s rieng cho 1.33 TRIEU dong OCR): ban CU dung `itertuples()` (dung namedtuple, cham)
+    + `setdefault(key, []).append(...)` (goi method setdefault MOI dong) - 2 nguon cham chinh
+    cua vong lap Python thuan tren corpus lon nhu vay (do that: ~12.5s). Fix: zip() truc tiep
+    tren cac MANG numpy tho (df["col"].values, nhanh hon namedtuple construction moi dong) +
+    defaultdict(list) (tranh goi setdefault() moi dong, chi index truc tiep) - do that con
+    ~8.6s (~31% nhanh hon), KET QUA GIONG HET (da so sanh tung phan tu). Van la chi phi 1 LAN/
+    phien (lru_cache) - KHONG the ve gan 0 hoan toan neu khong doi han cau truc du lieu (bo
+    han dict-per-row, ngoai pham vi lan sua nay)."""
     if not OCR_TEXT_PATH.exists():
         return {}
     df = pd.read_parquet(OCR_TEXT_PATH)
-    out: dict[tuple[str, int], list[dict]] = {}
-    for row in df.itertuples(index=False):
-        key = (row.video_id, int(row.frame_idx))
-        out.setdefault(key, []).append({
-            "text_norm": row.text_norm, "ymin": row.ymin, "xmin": row.xmin,
-            "ymax": row.ymax, "xmax": row.xmax,
+    out: dict[tuple[str, int], list[dict]] = _defaultdict(list)
+    for vid, fidx, text, ymin, xmin, ymax, xmax in zip(
+        df["video_id"].values, df["frame_idx"].values, df["text_norm"].values,
+        df["ymin"].values, df["xmin"].values, df["ymax"].values, df["xmax"].values,
+    ):
+        out[(vid, int(fidx))].append({
+            "text_norm": text, "ymin": ymin, "xmin": xmin, "ymax": ymax, "xmax": xmax,
         })
-    return out
+    return dict(out)
 
 
 def _ocr_frame_words_clustered(video_id: str, frame_idx: int) -> list[str]:

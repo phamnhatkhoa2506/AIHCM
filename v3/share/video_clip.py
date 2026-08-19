@@ -21,8 +21,14 @@ from video_audio import local_video_path, read_video_bytes
 
 VIDEO_CACHE_DIR = _V3_ROOT / ".cache" / "video_full"  # video gốc trích 1 lần/video_id, giữ lại
 CLIP_CACHE_DIR = _V3_ROOT / ".cache" / "video_clips"  # đoạn ngắn đã cắt, giữ lại theo (video_id,t)
+# 2026-08-20 (theo yeu cau nguoi dung: "chức năng xem video của kết quả temporal để tinh chỉnh
+# ... approve frame mong muốn khi đã kiểm duyệt qua video") - anh xem-truoc khi nguoi dung
+# tinh chinh 1 moc TRAKE bang tay (KHONG gioi han theo cac frame dense_meta.parquet DA co san -
+# cho phep "scrub" TU DO tai BAT KY thoi diem nao, xem extract_single_frame duoi day).
+CORRECTED_FRAME_CACHE_DIR = _V3_ROOT / ".cache" / "trake_corrected_frames"
 VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 CLIP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CORRECTED_FRAME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_PAD_SECONDS = 3.0  # +-3s quanh frame -> đoạn ~6s (CHỈ dùng khi fallback, xem
 # get_shot_clip_bytes - đường CHÍNH giờ cắt theo đúng RANH GIỚI SHOT thay vì pad cố định).
@@ -123,6 +129,38 @@ def get_fixed_window_clip_bytes(
     center_s = frame_id / fps
     start_s = max(0.0, center_s - window_seconds / 2)
     return _cut_clip(video_id, start_s, window_seconds)
+
+
+def extract_single_frame(video_id: str, time_seconds: float) -> Path:
+    """Trích 1 frame DUY NHẤT tại đúng thời điểm time_seconds (2026-08-20, tính năng "tinh
+    chỉnh TRAKE" — xem tune_trake_anchor / _render_trake_frame_tune trong app.py) — KHÁC mọi
+    hàm khác trong file này (chỉ cắt CLIP), và KHÔNG giới hạn theo các frame đã có sẵn trong
+    dense_meta.parquet (mật độ mẫu thưa, ~0.55-2.65s/frame) — cho phép người dùng "scrub" tới
+    BẤT KỲ giây nào rồi lấy đúng frame tại đó, để chỉnh sửa kết quả TRAKE ban đầu nếu chưa đúng.
+
+    Trả về PATH file JPEG (không phải bytes) — cache theo (video_id, giây làm tròn 0.1s) để
+    dùng LẠI ĐƯỢC như 1 image_path bình thường (canvas vẽ Object/OCR, VLM đọc chữ...), giống hệt
+    các keyframe khác trong hệ thống, không cần xử lý đặc biệt ở nơi gọi."""
+    t = max(0.0, round(time_seconds, 1))
+    cache_path = CORRECTED_FRAME_CACHE_DIR / f"{video_id}_t{t}.jpg"
+    if cache_path.exists():
+        return cache_path
+
+    full_path = _cached_full_video_path(video_id)
+    tmp_path = cache_path.with_name(cache_path.stem + "_tmp.jpg")  # ".tmp" o GIUA (khong o cuoi)
+    # - dong bo voi _cut_clip(), tranh bug dinh dang output doan theo duoi file (xem _cut_clip).
+    cmd = [
+        "ffmpeg", "-y", "-ss", str(t), "-i", str(full_path),
+        "-frames:v", "1", "-q:v", "2", str(tmp_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0 or not tmp_path.exists() or tmp_path.stat().st_size == 0:
+        raise RuntimeError(
+            f"ffmpeg không trích được frame tại t={t}s cho {video_id}: "
+            f"{result.stderr.decode(errors='ignore')[-300:]}"
+        )
+    tmp_path.replace(cache_path)
+    return cache_path
 
 
 def get_shot_clip_bytes(video_id: str, frame_id: int) -> bytes:
