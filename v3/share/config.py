@@ -1,6 +1,22 @@
 """Đường dẫn dữ liệu Batch 1 AIC 2026 + cấu hình Tier 1 (vector search)."""
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# File nay nam trong share/ (v3/share/config.py) - .parent.parent moi la goc v3/, noi thuc su
+# chua index/ va .cache/. Di chuyen file nay sang thu muc khac PHAI xem lai dong nay.
+_V3_ROOT = Path(__file__).resolve().parent.parent
+
+# 2026-08-20 (theo yeu cau nguoi dung, phat hien qua debug hieu nang TRAKE "SigLIP-2 only van
+# 132s" - do that: .env (AIC_LOCAL_MODELS=1, tao 2026-08-19) CHUA TUNG duoc code doc o dau ca -
+# app.py/config.py KHONG goi load_dotenv(), nen bien nay khong bao gio thuc su duoc set, app
+# VAN chay qua Modal (remote) nhu cu ma KHONG BAO GIO that su chuyen sang local - day la nguyen
+# nhan that cua do cham khi tang top_k (truyen hang chuc nghin dong qua mang cho MOI anchor),
+# KHONG phai do thuat toan cham. load_dotenv() o day (dau tien MOI module import, vi moi file
+# deu "from config import ...") de .env thuc su co hieu luc TRUOC khi cac module khac doc
+# os.environ.get("AIC_LOCAL_MODELS", ...) (local_text_encoders.py, dense_search.py).
+load_dotenv(_V3_ROOT / ".env")
+
 DATA_ROOT = Path(r"D:\Programming\AIHCM\data\Competition")
 
 # 2026-08-19 (theo yeu cau nguoi dung, nhanh git khac: "chạy mọi thứ local... path thì bạn
@@ -12,10 +28,6 @@ DATA_ROOT = Path(r"D:\Programming\AIHCM\data\Competition")
 OUR_DATA_ROOT = Path(r"D:\Programming\AIHCM\data\Our")
 KEYFRAME_REPO_ROOT = Path(r"D:\Programming\AIHCM\keyframe")
 KEYFRAME_OUTPUT_ROOT = KEYFRAME_REPO_ROOT / "data" / "output"
-
-# File nay nam trong share/ (v3/share/config.py) - .parent.parent moi la goc v3/, noi thuc su
-# chua index/ va .cache/. Di chuyen file nay sang thu muc khac PHAI xem lai 2 dong nay.
-_V3_ROOT = Path(__file__).resolve().parent.parent
 
 CLIP_FEATURES_DIR = DATA_ROOT / "clip-features-32"
 MAP_KEYFRAMES_DIR = DATA_ROOT / "map-keyframes"
