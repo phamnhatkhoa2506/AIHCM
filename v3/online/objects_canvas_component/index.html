@@ -1,0 +1,615 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <style>
+    /* 2026-08-15 (theo yeu cau nguoi dung "khong tu suy luan, custom 2 loai box: xanh la = OCR
+     go tu do, vang = Object voi dropdown 514 nhan gan lien tren box") - HTML5 canvas + JS
+     thuan (khong React/fabric.js), giao tiep Streamlit qua dung giao thuc postMessage noi bo.
+     Toan bo component nam trong 1 iframe DUY NHAT nen overlay input/select tren canvas KHONG
+     dinh bug cross-iframe. */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    /* 2026-08-18 (theo yeu cau nguoi dung: "phần box vẽ tự fit theo chiều ngang, không cố định"
+     - sau khi phat hien canvas co dinh 480px bi TRAN/CAT o card TRAKE moi (padding/border cua
+     card an vao ngan sach 480px, canvas cung 480px cung nhac khong con vua). #wrap TRUOC DAY
+     la "inline-block" (chi rong bang noi dung, khong bao gio > W) - doi sang "block" + width
+     100% de LAP DAY container Streamlit dat no vao (card TRAKE, hoac cot KIS/Q&A), thay vi bi
+     gioi han boi kich thuoc noi dung cu dinh. */
+    #wrap {
+      display: block;
+      width: 100%;
+    }
+
+    #modebar {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    .mode-btn {
+      border: 2px solid transparent;
+      border-radius: 6px;
+      padding: 5px 12px;
+      font: 600 12px system-ui, sans-serif;
+      cursor: pointer;
+      color: #111;
+    }
+
+    #modeOcr {
+      background: #22c55e;
+    }
+
+    #modeObject {
+      background: #f5c518;
+    }
+
+    .mode-btn.active {
+      border-color: #fff;
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
+    }
+
+    .mode-btn.inactive {
+      opacity: 0.45;
+    }
+
+    /* 2026-08-18: #stage GIU NGUYEN kich thuoc NOI BO co dinh W x H (he toa do ve khong doi,
+     moi logic drawBox/syncOverlays/openOcrEditor/openObjectEditor/stageXY... deu tinh theo
+     khong gian W x H nay) - #stageWrap (moi) moi la phan tu RESPONSIVE thuc su, dung CSS
+     `transform: scale()` de thu/phong TOAN BO #stage (canvas + moi overlay con) THEO CUNG 1
+     TI LE UNIFORM, giu nguyen vi tri tuong doi giua cac phan tu con (khong can sua tung cong
+     thuc toa do rieng le) - xem updateScale() trong JS. */
+    #stageWrap {
+      width: 100%;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #stage {
+      position: relative;
+      background: #1c1c1e;
+      border: 1px solid #3a3a3c;
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: crosshair;
+      user-select: none;
+      transform-origin: top left;
+      /* 2026-08-18 (theo yeu cau nguoi dung: "bên phải và ở dưới có bị che đi 1 xíu, thêm ít
+         padding để vừa khít") - nguyen nhan THAT khong phai thieu padding, ma la lech phep
+         tinh: mac dinh box-sizing:content-box, "width: Wpx" (JS dat) CHI la phan NOI DUNG,
+         border 1px moi canh CONG THEM ra ngoai -> kich thuoc thuc te render la (W+2)px, trong
+         khi updateScale() tinh ti le dua DUNG tren W (khong biet co border) -> sau scale, phan
+         du ~2px*ti_le tran nhe ra ngoai #stageWrap, bi cat/de len noi dung ke ben. Fix: doi
+         sang border-box - border nam GON trong dung W x H da khai bao, khop chinh xac voi phep
+         tinh scale, khong con du ra chut nao. */
+      box-sizing: border-box;
+    }
+
+    #gridCanvas {
+      display: block;
+    }
+
+    .box-editor {
+      position: absolute;
+      display: flex;
+      gap: 3px;
+      z-index: 10;
+    }
+
+    .box-edit-input {
+      background: #2c2c2e;
+      color: #4ade80;
+      border: 1px solid #22c55e;
+      border-radius: 4px;
+      font: 600 12px/1.4 system-ui, sans-serif;
+      padding: 2px 6px;
+      outline: none;
+    }
+
+    /* 2026-08-18 (theo yeu cau nguoi dung: "phần lọc object trên object box hơi khó tìm vì
+     người dùng không search similarity được, họ phải kéo kéo cả trăm từ để coi" - thay <select>
+     tinh (514 option, chi go-de-nhay-toi-prefix cua trinh duyet) bang 1 combobox TU LAM: o
+     text go de LOC (substring, khong phan biet dau - dung logic giong _strip_accents ben
+     Python) + danh sach goi y THA XUONG duoi, CHI CHO CHON tu danh sach (khong cho go tu do -
+     giu dung nguyen tac an toan da co: "KHÔNG còn suy luận/gợi ý mờ nào", xem docstring
+     objects_canvas.py). */
+    .box-edit-search-wrap {
+      position: relative;
+    }
+
+    .box-edit-search {
+      background: #2c2c2e;
+      color: #fde68a;
+      border: 1px solid #f5c518;
+      border-radius: 4px;
+      font: 600 12px system-ui, sans-serif;
+      padding: 2px 6px;
+      outline: none;
+      width: 160px;
+    }
+
+    .box-edit-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 2px;
+      z-index: 30;
+      background: #2c2c2e;
+      border: 1px solid #f5c518;
+      border-radius: 4px;
+      max-height: 160px;
+      overflow-y: auto;
+      width: 220px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+
+    .box-edit-dropdown-item {
+      padding: 4px 8px;
+      font: 500 12px system-ui, sans-serif;
+      color: #fde68a;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .box-edit-dropdown-item.highlight,
+    .box-edit-dropdown-item:hover {
+      background: #f5c518;
+      color: #111;
+    }
+
+    .box-edit-dropdown-empty {
+      padding: 4px 8px;
+      font: 500 12px system-ui, sans-serif;
+      color: #888;
+    }
+
+    .box-edit-count {
+      background: #2c2c2e;
+      color: #fde68a;
+      border: 1px solid #f5c518;
+      border-radius: 4px;
+      font: 600 12px system-ui, sans-serif;
+      padding: 2px 2px;
+      outline: none;
+      width: 34px;
+      text-align: center;
+    }
+
+    .box-del {
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      background: #d33;
+      color: #fff;
+      border-radius: 50%;
+      font: 700 11px/16px system-ui, sans-serif;
+      text-align: center;
+      cursor: pointer;
+      z-index: 9;
+    }
+
+    #toolbar {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    #toolbar button {
+      background: #2c2c2e;
+      color: #eee;
+      border: 1px solid #4a4a4c;
+      border-radius: 5px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    #toolbar button:hover {
+      background: #3a3a3c;
+    }
+
+    #hint {
+      color: #999;
+      font-size: 11px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="wrap">
+    <div id="modebar">
+      <button id="modeOcr" class="mode-btn" type="button">🟢 OCR (gõ chữ tự do)</button>
+      <button id="modeObject" class="mode-btn" type="button">🟡 Object (chọn nhãn)</button>
+    </div>
+    <div id="stageWrap">
+      <div id="stage">
+        <canvas id="gridCanvas"></canvas>
+      </div>
+    </div>
+    <div id="toolbar">
+      <button id="undoBtn" title="Hoàn tác khung cuối">↩ Hoàn tác</button>
+      <button id="clearBtn" title="Xoá hết">🗑 Xoá hết</button>
+      <span id="hint">Chọn chế độ ở trên rồi kéo chuột vẽ khung.</span>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var W = 480, H = 270;
+      var LABELS = [];  // 514 nhan tieng Viet (tu Python truyen sang, xem objects_canvas.py)
+      // box: {x0,y0,x1,y1, kind:"ocr"|"object", text (ocr), label (object), minCount (object)}
+      var boxes = [];
+      var mode = "ocr";  // che do dang chon de VE KHUNG MOI - khong anh huong khung da co
+      var initialized = false;
+      var drawing = false, curBox = null;
+      var stage = document.getElementById("stage");
+      var canvas = document.getElementById("gridCanvas");
+      var ctx = canvas.getContext("2d");
+      var modeOcrBtn = document.getElementById("modeOcr");
+      var modeObjectBtn = document.getElementById("modeObject");
+
+      var COLOR = { ocr: "#22c55e", object: "#f5c518" };
+
+      function sendToStreamlit(type, data) {
+        var out = Object.assign({ isStreamlitMessage: true, type: type }, data);
+        window.parent.postMessage(out, "*");
+      }
+      function componentReady() { sendToStreamlit("streamlit:componentReady", { apiVersion: 1 }); }
+      function setFrameHeight() {
+        var h = stage.getBoundingClientRect().height + document.getElementById("modebar").offsetHeight + 50;
+        sendToStreamlit("streamlit:setFrameHeight", { height: Math.ceil(h) });
+      }
+      function emitValue() {
+        sendToStreamlit("streamlit:setComponentValue", {
+          value: boxes.map(function (b) {
+            return {
+              x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, kind: b.kind,
+              text: b.text || "", label: b.label || "", minCount: b.minCount || 1,
+            };
+          })
+        });
+      }
+
+      function resize() {
+        // #stage/#canvas GIU NGUYEN kich thuoc noi bo co dinh W x H - #stageWrap (CSS) moi la
+        // phan tu co width:100% thuc su, updateScale() se THU/PHONG toan bo #stage cho vua no.
+        canvas.width = W; canvas.height = H;
+        canvas.style.width = W + "px"; canvas.style.height = H + "px";
+        stage.style.width = W + "px";
+        updateScale();
+      }
+
+      // 2026-08-18 (theo yeu cau nguoi dung: "phần box vẽ tự fit theo chiều ngang, không cố
+      // định") - #stage/canvas van VE theo he toa do noi bo CO DINH W x H (khong doi bat ky logic
+      // toa do nao khac trong file nay), CHI thu/phong TRUC QUAN bang CSS transform:scale() de
+      // vua khop chieu rong THAT SU cua #stageWrap (container Streamlit dat component vao, vd the
+      // Mốc TRAKE 480px, hoac cot rong hon o KIS/Q&A) - dung mot lan DUY NHAT o day, KHONG can sua
+      // rieng tung cong thuc toa do (drawBox/syncOverlays/openOcrEditor/openObjectEditor) vi
+      // transform ap dung DONG BO cho toan bo cay con, giu nguyen vi tri tuong doi giua chung.
+      function updateScale() {
+        var wrap = document.getElementById("stageWrap");
+        var availW = wrap.getBoundingClientRect().width;
+        var scale = availW > 0 ? availW / W : 1;
+        stage.style.transform = "scale(" + scale + ")";
+        wrap.style.height = Math.ceil(H * scale) + "px";
+        setFrameHeight();
+      }
+
+      function updateModeButtons() {
+        modeOcrBtn.className = "mode-btn " + (mode === "ocr" ? "active" : "inactive");
+        modeObjectBtn.className = "mode-btn " + (mode === "object" ? "active" : "inactive");
+      }
+
+      function boxDisplayLabel(b) {
+        if (b.kind === "ocr") return b.text || "";
+        if (!b.label) return "";
+        return b.minCount > 1 ? (b.label + " ×" + b.minCount) : b.label;
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, W, H);
+        ctx.strokeStyle = "rgba(255,255,255,0.06)";
+        ctx.lineWidth = 1;
+        for (var gx = 0; gx <= W; gx += 20) { ctx.beginPath(); ctx.moveTo(gx + 0.5, 0); ctx.lineTo(gx + 0.5, H); ctx.stroke(); }
+        for (var gy = 0; gy <= H; gy += 20) { ctx.beginPath(); ctx.moveTo(0, gy + 0.5); ctx.lineTo(W, gy + 0.5); ctx.stroke(); }
+
+        boxes.forEach(function (b, i) { drawBox(b, i); });
+        if (curBox) drawBox(curBox, -1);
+
+        syncOverlays();
+      }
+
+      function drawBox(b, idx) {
+        var x = Math.min(b.x0, b.x1), y = Math.min(b.y0, b.y1);
+        var w = Math.abs(b.x1 - b.x0), h = Math.abs(b.y1 - b.y0);
+        var color = COLOR[b.kind] || COLOR.ocr;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+        var text = boxDisplayLabel(b);
+        if (text) {
+          ctx.font = "600 12px system-ui, sans-serif";
+          var icon = b.kind === "ocr" ? "🔤" : "🔲";
+          var label = "#" + (idx + 1) + " " + icon + " " + text;
+          var padX = 5;
+          var tw = ctx.measureText(label).width + padX * 2;
+          var chipY = y - 18 >= 0 ? y - 18 : y;
+          ctx.fillStyle = color;
+          ctx.fillRect(x, chipY, tw, 17);
+          ctx.fillStyle = "#111";
+          ctx.fillText(label, x + padX, chipY + 12);
+        }
+      }
+
+      function syncOverlays() {
+        var old = stage.querySelectorAll(".box-del");
+        old.forEach(function (el) { el.remove(); });
+        boxes.forEach(function (b, i) {
+          var x = Math.min(b.x0, b.x1), y = Math.min(b.y0, b.y1);
+          var w = Math.abs(b.x1 - b.x0);
+          var del = document.createElement("div");
+          del.className = "box-del";
+          del.textContent = "×";
+          del.style.left = (x + w - 8) + "px";
+          del.style.top = (y - 8) + "px";
+          del.title = "Xoá khung #" + (i + 1);
+          del.addEventListener("mousedown", function (e) {
+            e.stopPropagation();
+            boxes.splice(i, 1);
+            draw(); emitValue(); setFrameHeight();
+          });
+          stage.appendChild(del);
+        });
+      }
+
+      // ----- OCR: 1 o text tu do (mau xanh la) -----
+      function openOcrEditor(box, onDone) {
+        var x = Math.min(box.x0, box.x1), y = Math.min(box.y0, box.y1);
+        var w = Math.max(80, Math.abs(box.x1 - box.x0));
+        var wrap = document.createElement("div");
+        wrap.className = "box-editor";
+        wrap.style.left = x + "px";
+        wrap.style.top = (y - 24 >= 0 ? y - 24 : y) + "px";
+        var input = document.createElement("input");
+        input.className = "box-edit-input";
+        input.type = "text";
+        input.value = box.text || "";
+        input.placeholder = "Chữ trên màn hình…";
+        input.style.width = w + "px";
+        wrap.appendChild(input);
+        stage.appendChild(wrap);
+        input.focus(); input.select();
+
+        var done = false;
+        function finish() {
+          if (done) return;
+          done = true;
+          box.text = input.value.trim();
+          wrap.remove();
+          onDone();
+        }
+        input.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") finish();
+          if (e.key === "Escape") finish();
+        });
+        input.addEventListener("blur", finish);
+        wrap.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+      }
+
+      // 2026-08-18: dung chung voi tier1_filter.py::_strip_accents ben Python (khong phan biet
+      // dau) - JS khong decompose "đ" qua NFD nhu cac ky tu co dau phu khac nen phai thay tay.
+      function stripAccents(s) {
+        return s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "d").toLowerCase();
+      }
+
+      // ----- Object: o TIM KIEM (combobox tu lam, thay <select> tinh) + o so luong toi thieu -----
+      function openObjectEditor(box, onDone) {
+        var x = Math.min(box.x0, box.x1), y = Math.min(box.y0, box.y1);
+        var wrap = document.createElement("div");
+        wrap.className = "box-editor";
+        wrap.style.left = x + "px";
+        wrap.style.top = (y - 26 >= 0 ? y - 26 : y) + "px";
+
+        var searchWrap = document.createElement("div");
+        searchWrap.className = "box-edit-search-wrap";
+        var search = document.createElement("input");
+        search.className = "box-edit-search";
+        search.type = "text";
+        search.placeholder = "Gõ để tìm nhãn…";
+        search.value = box.label || "";
+        searchWrap.appendChild(search);
+
+        var dropdown = document.createElement("div");
+        dropdown.className = "box-edit-dropdown";
+        dropdown.style.display = "none";
+        searchWrap.appendChild(dropdown);
+
+        var count = document.createElement("input");
+        count.className = "box-edit-count";
+        count.type = "number"; count.min = "1"; count.value = box.minCount || 1;
+        count.title = "Số lượng tối thiểu";
+
+        wrap.appendChild(searchWrap);
+        wrap.appendChild(count);
+        stage.appendChild(wrap);
+        search.focus(); search.select();
+
+        var filtered = [];
+        var highlightIdx = -1;
+
+        function renderDropdown() {
+          dropdown.innerHTML = "";
+          if (filtered.length === 0) {
+            var empty = document.createElement("div");
+            empty.className = "box-edit-dropdown-empty";
+            empty.textContent = "Không tìm thấy nhãn nào khớp";
+            dropdown.appendChild(empty);
+          } else {
+            filtered.forEach(function (lb, i) {
+              var item = document.createElement("div");
+              item.className = "box-edit-dropdown-item" + (i === highlightIdx ? " highlight" : "");
+              item.textContent = lb;
+              // mousedown (khong phai click) + preventDefault: tranh input bi BLUR truoc khi
+              // click duoc dang ky, se lam finish() chay som va xoa mat dropdown truoc khi chon.
+              item.addEventListener("mousedown", function (e) { e.preventDefault(); selectLabel(lb); });
+              dropdown.appendChild(item);
+            });
+          }
+          dropdown.style.display = "block";
+        }
+
+        function updateFilter() {
+          var q = stripAccents(search.value.trim());
+          if (!q) {
+            filtered = LABELS.slice(0, 30);  // chua go gi -> goi y 30 nhan dau (da sap xep bang chu cai)
+          } else {
+            filtered = LABELS.filter(function (lb) { return stripAccents(lb).indexOf(q) !== -1; }).slice(0, 30);
+          }
+          highlightIdx = filtered.length ? 0 : -1;
+          renderDropdown();
+        }
+
+        function selectLabel(lb) {
+          box.label = lb;
+          search.value = lb;
+          dropdown.style.display = "none";
+        }
+
+        search.addEventListener("input", updateFilter);
+        search.addEventListener("focus", updateFilter);
+        search.addEventListener("keydown", function (e) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            if (filtered.length) { highlightIdx = (highlightIdx + 1) % filtered.length; renderDropdown(); }
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            if (filtered.length) { highlightIdx = (highlightIdx - 1 + filtered.length) % filtered.length; renderDropdown(); }
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (highlightIdx >= 0 && filtered[highlightIdx]) selectLabel(filtered[highlightIdx]);
+          } else if (e.key === "Escape") {
+            finish();
+          }
+        });
+        count.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === "Escape") finish(); });
+
+        var done = false;
+        function finish() {
+          if (done) return;
+          done = true;
+          // AN TOAN (giu dung nguyen tac cu "KHÔNG còn suy luận/gợi ý mờ nào"): box.label CHI
+          // duoc gan qua selectLabel() (dung 1 trong LABELS) - go chu ma khong bam chon thi
+          // KHONG duoc tinh, tranh nham "chuoi go do" thanh nhan that.
+          if (LABELS.indexOf(box.label) === -1) box.label = "";
+          box.minCount = Math.max(1, parseInt(count.value, 10) || 1);
+          wrap.remove();
+          onDone();
+        }
+        wrap.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+        wrap.addEventListener("focusout", function (e) {
+          // dong khi focus roi khoi CA 2 o (khong phai chuyen qua lai giua search<->count)
+          setTimeout(function () {
+            if (!wrap.contains(document.activeElement)) finish();
+          }, 0);
+        });
+      }
+
+      function stageXY(evt) {
+        // 2026-08-18: #stage co the dang bi CSS transform:scale() (xem updateScale()) - r.width/
+        // r.height la kich thuoc HIEN THI THUC TE (sau scale), can quy doi NGUOC ve khong gian noi
+        // bo W x H (khong gian TAT CA logic con lai trong file nay dang dung) truoc khi so sanh.
+        var r = stage.getBoundingClientRect();
+        var scaleX = r.width > 0 ? W / r.width : 1;
+        var scaleY = r.height > 0 ? H / r.height : 1;
+        return {
+          x: Math.max(0, Math.min(W, (evt.clientX - r.left) * scaleX) - 5),
+          y: Math.max(0, Math.min(H, (evt.clientY - r.top) * scaleY)),
+        };
+      }
+
+      stage.addEventListener("mousedown", function (e) {
+        if (e.target !== canvas) return;
+        var p = stageXY(e);
+        drawing = true;
+        curBox = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, kind: mode, text: "", label: "", minCount: 1 };
+      });
+      window.addEventListener("mousemove", function (e) {
+        if (!drawing || !curBox) return;
+        var p = stageXY(e);
+        curBox.x1 = p.x; curBox.y1 = p.y;
+        draw();
+      });
+      window.addEventListener("mouseup", function () {
+        if (!drawing || !curBox) return;
+        drawing = false;
+        var w = Math.abs(curBox.x1 - curBox.x0), h = Math.abs(curBox.y1 - curBox.y0);
+        if (w < 8 || h < 8) { curBox = null; draw(); return; }
+        var finished = curBox;
+        curBox = null;
+        boxes.push(finished);
+        draw();
+        var onDone = function () { draw(); emitValue(); setFrameHeight(); };
+        if (finished.kind === "object") openObjectEditor(finished, onDone);
+        else openOcrEditor(finished, onDone);
+      });
+
+      modeOcrBtn.addEventListener("click", function () { mode = "ocr"; updateModeButtons(); });
+      modeObjectBtn.addEventListener("click", function () { mode = "object"; updateModeButtons(); });
+
+      document.getElementById("undoBtn").addEventListener("click", function () {
+        boxes.pop(); draw(); emitValue(); setFrameHeight();
+      });
+      document.getElementById("clearBtn").addEventListener("click", function () {
+        boxes = []; draw(); emitValue(); setFrameHeight();
+      });
+
+      window.addEventListener("message", function (event) {
+        if (!event.data || event.data.type !== "streamlit:render") return;
+        var args = (event.data.args) || {};
+        if (!initialized) {
+          initialized = true;
+          W = args.width || W;
+          H = args.height || H;
+          LABELS = args.labels || [];
+          boxes = (args.boxes || []).map(function (b) {
+            return {
+              x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, kind: b.kind || "ocr",
+              text: b.text || "", label: b.label || "", minCount: b.minCount || 1,
+            };
+          });
+          resize();
+          draw();
+          setFrameHeight();
+        }
+      });
+
+      updateModeButtons();
+      resize();
+      draw();
+      componentReady();
+      setFrameHeight();
+
+      // 2026-08-18: tu dong cap nhat scale khi #stageWrap DOI KICH THUOC (vd nguoi dung keo thanh
+      // cuon ngang cua hang mốc TRAKE lam iframe hien ra/an di, resize cua so, sidebar dong/mo...)
+      // - ResizeObserver dang tin cay hon window.resize (bat duoc ca thay doi KHONG do window gay
+      // ra, vd container cha doi kich thuoc do CSS/layout khac, khong phai do nguoi dung keo cua so).
+      if (window.ResizeObserver) {
+        new ResizeObserver(function () { updateScale(); }).observe(document.getElementById("stageWrap"));
+      } else {
+        window.addEventListener("resize", updateScale);
+      }
+    })();
+  </script>
+</body>
+
+</html>

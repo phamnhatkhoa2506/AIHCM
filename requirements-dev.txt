@@ -1,0 +1,71 @@
+# AIC 2026 — v3 — requirements cho chạy LOCAL (model chạy trên máy, KHÔNG qua Modal).
+# Xem README.md — mục "Cài đặt" cho THỨ TỰ cài chính xác + lệnh git clone 2 model không có
+# trên PyPI (PE-Core, BEiT-3). File này LIỆT KÊ đủ, nhưng 1 lệnh `pip install -r requirements.txt`
+# DUY NHẤT KHÔNG đủ — PaddleOCR cần reinstall numpy sau, PE-Core/BEiT-3 cần `pip install -e`
+# từ repo clone tay. Đọc README trước khi chạy.
+#
+# Python 3.11 (khớp đúng bản Modal image đang dùng, offline/modal_infra/*.py) — bản khác CÓ
+# THỂ chạy được nhưng chưa test.
+
+# ============================================================ Nền tảng (core app + data)
+streamlit==1.38.*
+streamlit-drawable-canvas==0.9.3   # KHÔNG còn dùng cho khung object/OCR (đã thay bằng
+    # online/objects_canvas — HTML5 canvas viết tay), nhưng vẫn import được nếu code cũ nào
+    # còn tham chiếu; có thể bỏ nếu chắc chắn không cần.
+pandas==2.2.*
+numpy<2                            # QUAN TRỌNG: ghim <2 NGAY TỪ ĐẦU — xem mục "Xung đột thư
+    # viện #1" trong README (PaddleOCR local sẽ ép numpy<2 lần nữa sau khi cài xong).
+pyarrow==17.*                      # đọc/ghi .parquet (index/*.parquet)
+faiss-cpu==1.8.*
+Pillow
+requests
+python-dotenv                      # đọc .env (NVIDIA_NIM_API_KEY, ...)
+openai==1.*                        # client NIM (base_url NVIDIA) — VQA + LLM query-planning,
+    # KHÔNG chạy qua Modal (API ngoài, xem README mục "Không phải Modal nhưng vẫn cần mạng")
+deep_translator                    # CHỈ dùng cho 1 script offline 1 lần (build_label_translations.py)
+    # — có thể bỏ nếu không cần build lại label_vi.json.
+
+# ============================================================ Deep learning core
+torch==2.4.*                       # xem README mục GPU/CUDA nếu cần bản có CUDA (mặc định
+    # PyPI là CPU-only trên Windows — cài từ index PyTorch riêng nếu có GPU NVIDIA).
+torchvision==0.19.*
+transformers==4.44.*
+accelerate
+
+# ============================================================ SigLIP2 (query encoder + Region-CLIP rerank)
+# Chỉ cần torch/transformers/Pillow/accelerate ở trên — không có gói riêng, tải model qua
+# HuggingFace Hub tự động lần đầu chạy (google/siglip2-base-patch16-224, ~800MB).
+
+# ============================================================ PE-Core (query encoder)
+# torchvision đã có ở trên.
+ftfy
+regex
+timm==0.4.12                       # PIN CỨNG — xem README "Xung đột thư viện #2": PE-Core
+    # VÀ BEiT-3 cùng cần timm nhưng theo 2 API khác nhau, giải quyết bằng SHIM trong code
+    # (share/local_text_encoders.py), KHÔNG bump version.
+huggingface_hub
+einops
+# perception_models: KHÔNG có trên PyPI — clone tay + `pip install -e . --no-deps` (README).
+
+# ============================================================ BEiT-3 (query encoder)
+sentencepiece
+fairscale==0.4.0
+torchscale==0.2.0                  # bản PyPI 0.2.0 PIN cứng timm==0.4.12 trong metadata của
+    # chính nó — đây là NGUỒN GỐC của xung đột #2, không phải lựa chọn tuỳ ý ở đây.
+tensorboardX
+torchmetrics
+# unilm: KHÔNG có trên PyPI — clone tay (README), không cần pip install (import thẳng path).
+
+# ============================================================ OWLv2 / OCR / ASR / Grounding DINO
+# (OFFLINE, 1 lần build lại index — KHÔNG cần cho chạy app.py hàng ngày nếu index/*.parquet
+# đã có sẵn. Cài phần này CHỈ khi cần build lại dữ liệu từ đầu — xem README.)
+paddlepaddle-gpu==3.3.1            # OCR — xem README "Xung đột thư viện #1" (numpy) VÀ lưu ý
+    # Windows: bản -gpu cần CUDA khớp, PyPI index riêng (README có lệnh đúng); nếu không có
+    # GPU/CUDA phù hợp, dùng `paddlepaddle` (CPU) thay thế, chậm hơn nhiều.
+paddleocr==2.7.3
+librosa                            # ASR (PhoWhisper qua transformers, đã nằm ở core)
+soundfile
+
+# ============================================================ Modal (TUỲ CHỌN — chỉ cần nếu
+# KHÔNG set AIC_LOCAL_MODELS=1, tức vẫn muốn gọi model qua Modal thay vì local hoàn toàn)
+modal

@@ -1,0 +1,23 @@
+#!/bin/bash
+# Wrapper tu dong retry cho build_dense_objects_index.py - job nay bi kill ngoai y muon
+# LAP LAI NHIEU LAN (2026-08-14, chua ro nguyen nhan - co the phia may nguoi dung: sleep/
+# hibernate/mat ket noi terminal). Script nay TU PHAT HIEN khi tien trinh con chet va TU
+# KHOI DONG LAI ngay, dua vao checkpoint/resume da co san trong build_dense_objects_index.py
+# (khong mat du lieu moi lan restart).
+cd "D:\Programming\AIHCM\v3" || exit 1
+
+DONE_FILE="index/dense/objects_dense_done.jsonl"
+TOTAL=369589
+
+while true; do
+  done_count=$(wc -l < "$DONE_FILE" 2>/dev/null || echo 0)
+  if [ "$done_count" -ge "$TOTAL" ]; then
+    echo "[wrapper] DA XONG HET ($done_count/$TOTAL) - dung wrapper."
+    break
+  fi
+  echo "[wrapper] khoi dong (lai) build_dense_objects_index.py - da xong $done_count/$TOTAL truoc do..."
+  PYTHONIOENCODING=utf-8 python offline/build_dense_objects_index.py
+  exit_code=$?
+  echo "[wrapper] tien trinh con thoat (code=$exit_code) - cho 5s roi tu khoi dong lai..."
+  sleep 5
+done
