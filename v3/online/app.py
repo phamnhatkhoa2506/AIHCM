@@ -440,21 +440,42 @@ def _render_qa_submit_panel(video_id: str, frame_id: int, default_answer: str, w
         st.rerun()
 
 
-def _result_row_to_submission(mode: str, row, n_anchors: int = 0) -> dict:
+def _result_row_to_submission(mode: str, row, n_anchors: int = 0, widget_key: str | None = None) -> dict:
     """Chuyển 1 dòng results (pandas Series) thành dict đúng schema nộp bài theo mode - dùng
-    CHUNG cho cả nút Submit lẻ và nút tự động điền (tránh lệch định dạng giữa 2 đường)."""
+    CHUNG cho cả nút Submit lẻ và nút tự động điền (tránh lệch định dạng giữa 2 đường).
+
+    2026-08-20 (BUG THAT nguoi dung phat hien: "chức năng add các kết quả tự động còn lại khi
+    có 1 keyframe bị thay đổi, nó sẽ lấy luôn keyframe trước đó chưa thay đổi cũ") - TRUOC DAY
+    ham nay CHI doc row["frame_id"]/row[f"anchor{i}_frame_id"] GOC tu ket qua tim kiem, KHONG
+    biet gi ve frame nguoi dung DA XAC NHAN sua trong Playback (session_state[f"playback_state_
+    {widget_key}"], xem _playback_confirmed_frame_id). widget_key (moi, optional - None giu
+    HANH VI CU cho cac noi goi chua truyen vao): dung DE doc lai frame DA CHOT thay vi frame goc
+    - PHAI la DUNG CUNG cong thuc key voi noi da RENDER the ket qua do (xem _render_autofill_
+    button duoi day, tinh LAI y het widget_key cua vong lap hien thi chinh)."""
     if mode == "kis":
-        return {"video_id": row["video_id"], "frame_id": int(row["frame_id"])}
+        frame_id = int(row["frame_id"])
+        if widget_key:
+            frame_id = _playback_confirmed_frame_id(widget_key, frame_id)
+        return {"video_id": row["video_id"], "frame_id": frame_id}
     if mode == "qa":
-        return {"video_id": row["video_id"], "frame_id": int(row["frame_id"]), "answer": row["answer"]}
+        frame_id = int(row["frame_id"])
+        if widget_key:
+            frame_id = _playback_confirmed_frame_id(widget_key, frame_id)
+        return {"video_id": row["video_id"], "frame_id": frame_id, "answer": row["answer"]}
     if mode == "trake":
-        return {
-            "video_id": row["video_id"],
-            "frame_ids": [int(row[f"anchor{i}_frame_id"]) for i in range(n_anchors)],
-        }
+        default_ids = [int(row[f"anchor{i}_frame_id"]) for i in range(n_anchors)]
+        frame_ids = (
+            [int(f) for f in st.session_state[f"playback_state_{widget_key}"]]
+            if widget_key and f"playback_state_{widget_key}" in st.session_state else default_ids
+        )
+        return {"video_id": row["video_id"], "frame_ids": frame_ids}
     if mode == "temporal":
         # xem docstring _render_playback cho dinh nghia "frame giua" (median, khong phai TB cong)
-        frame_ids = [int(row[f"anchor{i}_frame_id"]) for i in range(n_anchors)]
+        default_ids = [int(row[f"anchor{i}_frame_id"]) for i in range(n_anchors)]
+        frame_ids = (
+            [int(f) for f in st.session_state[f"playback_state_{widget_key}"]]
+            if widget_key and f"playback_state_{widget_key}" in st.session_state else default_ids
+        )
         return {"video_id": row["video_id"], "frame_id": int(statistics.median(frame_ids))}
     raise ValueError(f"mode không hợp lệ: {mode}")
 
@@ -469,10 +490,25 @@ def _render_autofill_button(mode: str, results: pd.DataFrame, n_anchors: int = 0
               else f"⬇️ Đã đủ {SUBMISSION_MAX}")
     if st.button(label, disabled=remaining <= 0, key=f"autofill_{mode}"):
         added = 0
-        for _, row in results.iterrows():
+        # 2026-08-20 (theo yeu cau nguoi dung - xem ghi chu day du o _result_row_to_submission)
+        # - tinh LAI DUNG widget_key da dung luc RENDER the ket qua (xem cac vong lap chinh KIS/
+        # Q&A/TRAKE) de doc dung frame DA XAC NHAN trong Playback thay vi luon lay frame goc.
+        for i, (_, row) in enumerate(results.iterrows()):
             if added >= remaining:
                 break
-            if _submit_row(mode, _result_row_to_submission(mode, row, n_anchors)):
+            if mode == "kis":
+                widget_key = f"kis_{i}_{row['video_id']}_{int(row['frame_id'])}"
+            elif mode == "qa":
+                widget_key = f"qa_{i}_{row['video_id']}_{int(row['frame_id'])}"
+            elif mode in ("trake", "temporal"):
+                default_ids = [int(row[f"anchor{k}_frame_id"]) for k in range(n_anchors)]
+                widget_key = f"trakechain_{row['video_id']}_{'_'.join(map(str, default_ids))}"
+            else:
+                widget_key = None
+            submission = _result_row_to_submission(mode, row, n_anchors, widget_key)
+            if widget_key:
+                submission["_anchor"] = _anchor_id(widget_key)
+            if _submit_row(mode, submission):
                 added += 1
         st.success(f"Đã tự động thêm {added} dòng.")
         st.rerun()
@@ -615,11 +651,21 @@ def _playback_confirmed_frame_id(widget_key: str, default_frame_id: int) -> int:
 def _frame_preview_path(video_id: str, frame_id: int, default_frame_id: int, default_path):
     """Path ảnh để hiển thị cho 1 frame - dùng THẲNG path có sẵn (dense-sampled, rẻ) nếu frame
     KHÔNG đổi so với đề xuất gốc, ngược lại trích MỚI qua extract_single_frame (frame tuỳ ý do
-    người dùng chọn trong Playback, thường KHÔNG trùng đúng 1 frame dense-sampled có sẵn)."""
+    người dùng chọn trong Playback, thường KHÔNG trùng đúng 1 frame dense-sampled có sẵn).
+
+    2026-08-20 (BUG THAT nguoi dung phat hien: "ffmpeg không trích được frame tại t=1033.9s" ->
+    RuntimeError lam SAP CA TRANG - nguyen nhan goc da fix rieng (widget_key rieng cho tung
+    (video,frame) that, khong con doc nham state cu cua lan tim khac), nhung VAN giu try/except
+    o day lam LOP PHONG THU THU 2 - ffmpeg co the that bai vi nhieu ly do khac (video hong, t
+    sat cuoi video do sai so lam tron fps...) - fallback ve default_path (KHONG crash ca app)
+    thay vi de RuntimeError bay len tan Streamlit script runner."""
     if frame_id == default_frame_id:
         return default_path
-    fps = _fps_by_video().get(video_id, 25.0)
-    return str(extract_single_frame(video_id, frame_id / fps))
+    try:
+        fps = _fps_by_video().get(video_id, 25.0)
+        return str(extract_single_frame(video_id, frame_id / fps))
+    except Exception:
+        return default_path
 
 
 def _render_playback(
@@ -1560,7 +1606,16 @@ if "last_search" in st.session_state:
         for i, row in results.iterrows():
             col = cols[i % 4]
             with col:
-                _qa_key = f"qa_{i}"
+                # 2026-08-20 (BUG THAT nguoi dung phat hien qua crash ffmpeg that: "ffmpeg
+                # không trích được frame tại t=1033.9s cho L21_V017" - key CHI theo VI TRI "i"
+                # trong luoi (khong gan voi danh tinh video/frame that) khien 2 LAN TIM KIEM
+                # KHAC NHAU dung CHUNG 1 key neu cung o vi tri i - state Playback CU (frame_id
+                # tinh chinh cho video/query TRUOC) bi doc NHAM cho video/query MOI o dung vi
+                # tri do, sinh ra frame_id KHONG thuoc ve video hien tai -> extract_single_frame
+                # trich sai giay, ffmpeg loi. Them video_id+frame_id goc vao key -> LUON RIENG
+                # cho tung (video, frame) that su, khong con dung chung/dung nham qua cac lan
+                # tim kiem khac nhau nua.
+                _qa_key = f"qa_{i}_{row['video_id']}_{int(row['frame_id'])}"
                 _render_scroll_anchor(_qa_key)
                 _default_frame_id = int(row["frame_id"])
                 # 2026-08-20 (theo yeu cau nguoi dung: "frame được bấm chức năng playback sẽ
@@ -1716,7 +1771,11 @@ if "last_search" in st.session_state:
         for i, row in results.iterrows():
             col = cols[i % 4]
             with col:
-                _kis_key = f"kis_{i}"
+                # 2026-08-20 (BUG THAT nguoi dung phat hien qua crash ffmpeg - xem ghi chu day
+                # du o nhanh Q&A phia tren cung file) - key gom them video_id+frame_id goc,
+                # KHONG chi dung vi tri "i", tranh doc nham state Playback cua lan tim kiem khac
+                # o TRUNG vi tri hien thi.
+                _kis_key = f"kis_{i}_{row['video_id']}_{int(row['frame_id'])}"
                 _render_scroll_anchor(_kis_key)
                 _default_frame_id = int(row["frame_id"])
                 # 2026-08-20 (theo yeu cau nguoi dung: "frame được bấm chức năng playback sẽ
