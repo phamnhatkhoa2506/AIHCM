@@ -1218,24 +1218,50 @@ def _rank_rrf(
         }
         ranked_by_model = {model: fut.result() for model, fut in futures.items()}
 
-    rrf_scores: dict[tuple, float] = {}
-    per_model_row: dict[tuple, pd.Series] = {}
-    for model in RRF_FUSION_MODELS:
-        ranked = ranked_by_model[model]
-        for rank, (_, row) in enumerate(ranked.iterrows(), start=1):
-            key = (row["video_id"], int(row["frame_id"]))
-            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
-            per_model_row.setdefault(key, row)
+    # 2026-08-20 (theo yeu cau nguoi dung: "cái gì mà nó chiếm thời gian lớn vậy" - phat hien
+    # qua log TRAKE: "Tầng 3 — pool mở rộng (backfill)" mat 9.2s/anchor nhung tong 2 sub-timer
+    # encode+xep hang CHI ~5.6-5.9s - con ~3.2-3.7s KHONG CO TIMER nao bao). Them log.timed() (da
+    # xong) LO RO ~7s cho pool_k=8000/model (16000 dong) o ban CU (.iterrows() + .copy() tung
+    # dong - Python loop tren tung dong DataFrame, noi tieng cham voi pandas). TOI UU (buoc 2):
+    # thay bang vectorized pandas - moi model 1 mang rrf-score tinh THANG tu vi tri hang (numpy,
+    # KHONG loop Python), gop 2 model bang concat+groupby().sum() (C-level trong pandas) thay vi
+    # dict Python + setdefault tung dong. Dua tren gia dinh DA XAC MINH: _rank_single() luon tra
+    # ve KET QUA DA SAP XEP giam dan theo score (FAISS index.search()/np.argsort(-sc) - xem
+    # dense_index_app.py::rank()), nen vi tri hang (0-based) + 1 = rank, khong can enumerate.
+    with (log.timed("Tầng 2 — gộp điểm RRF (siglip+pe_core)") if log else contextlib.nullcontext(lambda *_a, **_k: None)) as set_detail:
+        frames = []
+        for model in RRF_FUSION_MODELS:
+            ranked = ranked_by_model[model]
+            if ranked.empty:
+                continue
+            ranked = ranked.reset_index(drop=True)
+            rrf = 1.0 / (RRF_K + np.arange(1, len(ranked) + 1))
+            frames.append(ranked.assign(_rrf=rrf))
 
-    order = sorted(rrf_scores.items(), key=lambda kv: -kv[1])[:top_k]
-    rows = []
-    for key, score in order:
-        row = per_model_row[key].copy()
-        row["score"] = score
-        rows.append(row)
-    return pd.DataFrame(rows).reset_index(drop=True) if rows else pd.DataFrame(
-        columns=["video_id", "frame_id", "shot_idx", "path", "score"]
-    )
+        if not frames:
+            result = pd.DataFrame(columns=["video_id", "frame_id", "shot_idx", "path", "score"])
+        else:
+            combined = pd.concat(frames, ignore_index=True)
+            # groupby O(n) (hash-based, C-level) thay vi dict Python tung dong - sum RRF-score
+            # qua CA 2 model (frame chi xuat hien 1 model van duoc giu, dong gop 0 tu model kia,
+            # dung nguyen tac cu). keep="first" khop setdefault() cu: giu shot_idx/path tu LAN
+            # XUAT HIEN DAU (thu tu RRF_FUSION_MODELS, siglip truoc) - 2 model CUNG 1 frame vat
+            # ly nen shot_idx/path giong het nhau, thu tu khong anh huong ket qua.
+            agg_score = combined.groupby(["video_id", "frame_id"], sort=False)["_rrf"].sum()
+            first_rows = combined.drop_duplicates(subset=["video_id", "frame_id"], keep="first")
+            first_rows = first_rows.set_index(["video_id", "frame_id"])
+            first_rows["score"] = agg_score
+            result = (
+                first_rows.reset_index()
+                .drop(columns=["_rrf"])
+                .sort_values("score", ascending=False)
+                .head(top_k)
+                .reset_index(drop=True)
+            )
+        if log:
+            set_detail(f"{sum(len(v) for v in ranked_by_model.values())} dòng vào ({pool_k}/model) "
+                        f"-> {len(result)} dòng ra sau gộp")
+    return result
 
 
 def _spatial_box_candidates(

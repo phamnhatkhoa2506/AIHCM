@@ -236,13 +236,38 @@ def _render_trake_frame_tune(
 # ============================================================ Nộp bài (2026-08-20)
 # 2026-08-20 (theo yeu cau nguoi dung: "Với mỗi frame thêm nút Submit trực tiếp. Có 1 nút để
 # tự động thêm toàn bộ frame được xếp từ rank cap nhất -> thấp (tổng frame được submit thủ
-# công + tự động = 100)") - danh sach nop bai giu trong session_state["submission_list"]
-# (list[dict], MOI dict co "mode" + cac truong theo dung dinh dang BTC - xem
-# submission_pipeline.py docstring dau file: KIS=[video_id,frame_id], Q&A=[video_id,frame_id,
-# answer], TRAKE=[video_id,frame_id_1..n]). Toi da SUBMISSION_MAX=100 dong/truy van (khop dung
-# SUBMISSION_TOP_K cua BTC) - nut nop tay VA nut tu dong DEU cong chung vao 1 danh sach, KHONG
-# tach rieng 2 quota.
+# công + tự động = 100)") - danh sach nop bai giu trong session_state["submissions_by_query"]
+# (dict[str, list[dict]], 1 bucket/cau hoi - xem _active_submission_list ben duoi; MOI dict
+# trong 1 bucket co "mode" + cac truong theo dung dinh dang BTC - xem submission_pipeline.py
+# docstring dau file: KIS=[video_id,frame_id], Q&A=[video_id,frame_id,answer], TRAKE=[video_id,
+# frame_id_1..n]). Toi da SUBMISSION_MAX=100 dong/CAU HOI (khop dung SUBMISSION_TOP_K cua BTC) -
+# nut nop tay VA nut tu dong DEU cong chung vao 1 bucket, KHONG tach rieng 2 quota.
 SUBMISSION_MAX = 100
+
+# 2026-08-20 (theo yeu cau nguoi dung: "BTC yêu cầu submission cho mỗi câu phải 100 câu trả
+# lời, nhưng thuật toán của chúng ta đang làm mất đi cái logic đó" - phat hien qua screenshot
+# "Danh sách nộp bài (45/100)" dung CHUNG 1 pool 100 cho CA PHIEN, bat ke dang lam CAU HOI nao -
+# neu doi qua cau khac giua chung, 2 cau se bi TRON LAN vao CHUNG 1 file 100 dong, thay vi MOI
+# CAU rieng 100 dong nhu BTC doi hoi thuc su) - BO HAN 1 danh sach phang session_state[
+# "submission_list"], thay bang session_state["submissions_by_query"]: dict[str, list[dict]] -
+# MOI "cau hoi" (dinh danh boi CHINH o "Name" da them truoc do, vd "query-p1-1-kis") co 1 bucket
+# 100-dong RIENG. Doi "Name" (vd tu "...-1-..." sang "...-2-...") = TU DONG chuyen sang cau hoi
+# khac, bucket rong moi neu chua tung dung ten do, hoac phuc hoi dung bucket cu neu go LAI ten
+# da dung truoc do (khong mat du lieu, chi chuyen "khung nhin" dang xem).
+def _active_submission_key() -> str:
+    """Tra ve dinh danh CAU HOI HIEN TAI - dung CHINH gia tri o "Name" (sidebar, gan nut CSV) -
+    xem _render_submission_panel. `mode` la bien global cua sidebar (da gan truoc khi ham nay
+    duoc goi o bat ky dau, vi sidebar luon chay TRUOC trong thu tu script)."""
+    suffix = _FILENAME_MODE_SUFFIX.get(mode, "kis")
+    default_name = f"query-p1-x-{suffix}"
+    return (st.session_state.get(f"submission_file_name_{suffix}", default_name) or default_name).strip() or default_name
+
+
+def _active_submission_list() -> list[dict]:
+    """Danh sach nop bai (list[dict]) CUA DUNG cau hoi hien tai (xem _active_submission_key) -
+    dung ham nay (KHONG doc thang session_state["submission_list"] nua, bien do KHONG con dung)
+    o MOI noi can doc/ghi danh sach nop bai."""
+    return st.session_state.setdefault("submissions_by_query", {}).setdefault(_active_submission_key(), [])
 
 # 2026-08-20: dat SOM (truoc sidebar - block sidebar chay TRUOC, can bien nay ngay luc do) - xem
 # checkbox Region-CLIP rerank o sidebar.
@@ -265,7 +290,7 @@ def _submit_row(mode: str, row: dict) -> bool:
     """Them 1 dong vao danh sach nop bai - False neu da du 100 hoac da co san (trung), True neu
     them thanh cong. KHONG rerun o day (de nguoi goi tu quyet dinh - vd nut tu dong goi lap
     nhieu lan lien tiep, chi rerun 1 lan cuoi)."""
-    lst = st.session_state.setdefault("submission_list", [])
+    lst = _active_submission_list()
     full_row = {"mode": mode, **row}
     key = _submission_row_key(full_row)
     if any(_submission_row_key(r) == key for r in lst):
@@ -280,7 +305,7 @@ def _unsubmit_row(mode: str, row: dict) -> bool:
     """Hoàn tác 1 dòng ĐÃ nộp — xoá KHỎI danh sách nộp bài theo đúng key (2026-08-20, theo yêu
     cầu người dùng: "thêm thao tác Hoàn tác ghi đã nộp frame đó"). True nếu tìm thấy và xoá
     được, False nếu không có trong danh sách (không nên xảy ra khi gọi từ nút "✅ Đã nộp")."""
-    lst = st.session_state.setdefault("submission_list", [])
+    lst = _active_submission_list()
     key = _submission_row_key({"mode": mode, **row})
     for idx, r in enumerate(lst):
         if _submission_row_key(r) == key:
@@ -301,7 +326,7 @@ def _render_submit_button(mode: str, row: dict, widget_key: str, label: str | No
     icon_submit = "📤" if label is None else f"📤 {label}"
     icon_done = "✅" if label is None else f"✅ {label} (đã nộp)"
     icon_full = "📤" if label is None else f"📤 {label} (đã đủ {SUBMISSION_MAX})"
-    lst = st.session_state.get("submission_list", [])
+    lst = _active_submission_list()
     full_row = {"mode": mode, **row}
     already = any(_submission_row_key(r) == _submission_row_key(full_row) for r in lst)
     if already:
@@ -315,6 +340,62 @@ def _render_submit_button(mode: str, row: dict, widget_key: str, label: str | No
         if st.button(icon_submit, key=f"submitbtn_{widget_key}", help="Thêm dòng này vào danh sách nộp bài"):
             _submit_row(mode, row)
             st.rerun()
+
+
+# 2026-08-20 (theo yeu cau nguoi dung: "Thêm cho mình Mode VQA — Khi nhấn Submit tại từng
+# Frame: Hiển thị ô nhập Answer... Nhấn Confirm để submit") - KHAC _render_submit_button thuong
+# (nop NGAY khi bam 1 nut duy nhat): nut "📤" o day CHI MO 1 o nhap answer + nut Confirm rieng,
+# PHAI bam Confirm moi thuc su them vao danh sach nop bai - tranh nop nham cau tra loi VQA tu
+# dong/rong ma nguoi dung chua kip doc/sua. Dinh dang dong CSV KHONG doi (van
+# `video_id,frame_id,"answer"`, xem _submission_to_csv) - chi khac quy trinh nhap lieu. Tach 2
+# ham (_render_qa_submit_toggle + _render_qa_submit_panel, xem docstring tung ham) vi o nhap
+# Answer can TOAN CHIEU RONG the, khong vua hang icon ngang hep nhu cac nut khac.
+def _render_qa_submit_toggle(video_id: str, frame_id: int, widget_key: str) -> None:
+    """Nút icon (📤/✅) đặt TRONG hàng nút ngang cùng Video/Playback/VLM - CHỈ mở/đóng bảng
+    nhập Answer (xem _render_qa_submit_panel), KHÔNG tự nộp ngay khi bấm."""
+    lst = _active_submission_list()
+    key_tuple = _submission_row_key({"mode": "qa", "video_id": video_id, "frame_id": frame_id})
+    already = any(_submission_row_key(r) == key_tuple for r in lst)
+    open_key = f"qa_submit_open_{widget_key}"
+
+    if already:
+        if st.button("✅", key=f"qa_submitted_{widget_key}", help="Đã nộp — bấm để hoàn tác"):
+            _unsubmit_row("qa", {"video_id": video_id, "frame_id": frame_id})
+            st.rerun()
+    elif len(lst) >= SUBMISSION_MAX:
+        st.button("📤", key=f"qa_submitfull_{widget_key}", disabled=True,
+                   help=f"Danh sách nộp bài đã đủ {SUBMISSION_MAX} dòng — xoá bớt trước khi nộp thêm.")
+    else:
+        if st.button("📤", key=f"qa_submitbtn_{widget_key}", help="Nhập câu trả lời rồi bấm Confirm để nộp"):
+            st.session_state[open_key] = True
+            st.rerun()
+
+
+def _render_qa_submit_panel(video_id: str, frame_id: int, default_answer: str, widget_key: str) -> None:
+    """Bảng nhập Answer + Confirm/Huỷ - gọi SAU KHI hàng nút icon (_render_qa_submit_toggle)
+    đã đóng lại, vì ô nhập cần TOÀN CHIỀU RỘNG thẻ, không vừa hàng icon ngang hẹp như các nút
+    khác. Chỉ vẽ gì khi đang "mở" (đã bấm 📤) và CHƯA nộp - PHẢI bấm Confirm mới thực sự thêm
+    vào danh sách nộp bài (row["mode"]=="qa" nên đã tự nộp trước đây khi bấm nút duy nhất -
+    tách 2 bước để tránh nộp nhầm câu trả lời VQA tự động/rỗng mà người dùng chưa kịp sửa)."""
+    lst = _active_submission_list()
+    key_tuple = _submission_row_key({"mode": "qa", "video_id": video_id, "frame_id": frame_id})
+    already = any(_submission_row_key(r) == key_tuple for r in lst)
+    open_key = f"qa_submit_open_{widget_key}"
+    if already or not st.session_state.get(open_key):
+        return
+
+    answer_key = f"qa_submit_answer_{widget_key}"
+    if answer_key not in st.session_state:
+        st.session_state[answer_key] = default_answer
+    st.text_input("Answer", key=answer_key, placeholder="Nhập câu trả lời...")
+    col_confirm, col_cancel = st.columns(2)
+    if col_confirm.button("✅ Confirm", key=f"qa_confirm_{widget_key}"):
+        _submit_row("qa", {"video_id": video_id, "frame_id": frame_id, "answer": st.session_state[answer_key]})
+        st.session_state[open_key] = False
+        st.rerun()
+    if col_cancel.button("✕ Huỷ", key=f"qa_cancelbtn_{widget_key}"):
+        st.session_state[open_key] = False
+        st.rerun()
 
 
 def _result_row_to_submission(mode: str, row, n_anchors: int = 0) -> dict:
@@ -340,7 +421,7 @@ def _render_autofill_button(mode: str, results: pd.DataFrame, n_anchors: int = 0
     """Nút tự động điền — thêm các dòng CHƯA CÓ trong danh sách nộp bài, theo ĐÚNG THỨ TỰ rank
     hiện có (cao -> thấp), cho tới khi đủ SUBMISSION_MAX (không tách quota riêng với nộp tay —
     "tổng frame được submit thủ công + tự động = 100")."""
-    n_current = len(st.session_state.get("submission_list", []))
+    n_current = len(_active_submission_list())
     remaining = SUBMISSION_MAX - n_current
     label = (f"⬇️ Tự động điền đủ {SUBMISSION_MAX} (còn thiếu {remaining})" if remaining > 0
               else f"⬇️ Đã đủ {SUBMISSION_MAX}")
@@ -372,38 +453,103 @@ def _submission_to_csv(lst: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# 2026-08-20 (theo yeu cau nguoi dung: "Thêm ô Name gần nút Download CSV") - dat ten file CSV
+# nop bai theo dung quy uoc BTC (query-p1-x-A): x nguoi dung tu go (vd so thu tu cau hoi), A tu
+# dong theo Mode dang chon. Chi anh huong TEN FILE tai xuong, KHONG doi noi dung/dinh dang CSV.
+_FILENAME_MODE_SUFFIX = {"KIS": "kis", "Temporal": "kis", "TRAKE": "trake", "Q&A": "qa"}
+
+
 def _render_submission_panel() -> None:
     """Bảng điều khiển danh sách nộp bài — đặt ở sidebar, LUÔN hiện (không phụ thuộc mode hiện
     tại) để người dùng theo dõi tiến độ xuyên suốt phiên làm việc, kể cả khi đổi qua lại giữa
     KIS/Q&A/TRAKE."""
-    lst = st.session_state.get("submission_list", [])
+    lst = _active_submission_list()
     with st.sidebar:
         st.divider()
         st.markdown(f"### 📤 Danh sách nộp bài ({len(lst)}/{SUBMISSION_MAX})")
         if lst:
+            # `mode` la bien global cua sidebar (dinh nghia truoc _render_submission_panel()
+            # duoc goi - xem cuoi file) - suffix "A" TU DONG doi theo Mode dang chon, key rieng
+            # theo suffix de moi Mode nho DUNG ten file rieng (doi qua lai Mode khong de mat
+            # gia tri nguoi dung da go cho Mode kia).
+            suffix = _FILENAME_MODE_SUFFIX.get(mode, "kis")
+            default_name = f"query-p1-x-{suffix}"
+            file_name_input = st.text_input(
+                "Name", value=default_name, key=f"submission_file_name_{suffix}",
+                help="Tên file CSV tải xuống — thay 'x' bằng số thứ tự câu hỏi của bạn "
+                "(vd query-p1-3-kis). Phần cuối tự đổi theo Mode đang chọn.",
+            )
+            csv_file_name = (file_name_input or default_name).strip() or default_name
+            if not csv_file_name.lower().endswith(".csv"):
+                csv_file_name += ".csv"
+
             col_clear, col_dl = st.columns(2)
             if col_clear.button("🗑 Xoá hết"):
-                st.session_state.submission_list = []
+                # CHI xoa bucket cua CAU HOI dang xem (dung "Name" hien tai) - KHONG dung
+                # session_state.submission_list = [] nua (bien do khong con ton tai, moi cau
+                # hoi co bucket rieng - xem _active_submission_list).
+                st.session_state.setdefault("submissions_by_query", {})[_active_submission_key()] = []
                 st.rerun()
             col_dl.download_button(
-                "⬇️ CSV", _submission_to_csv(lst), file_name="submission.csv",
+                "⬇️ CSV", _submission_to_csv(lst), file_name=csv_file_name,
                 mime="text/csv", key="submission_csv_dl",
             )
             with st.expander(f"Xem {len(lst)} dòng đã chọn"):
+                # 2026-08-20 (theo yeu cau nguoi dung: "muốn có chức năng xóa trực tiếp ở đây +
+                # di chuyển lên xuống") - moi dong giờ co 3 nut nho (↑/↓/✕) canh caption, sua
+                # THANG vao `lst` (= _active_submission_list(), bucket cua CAU HOI dang xem) roi
+                # st.rerun() - giong pattern nut ✕ xoa mốc TRAKE da lam (xem trake_del_{i}).
                 for i, r in enumerate(lst, 1):
                     if r["mode"] == "trake":
-                        st.caption(f"{i}. [TRAKE] {r['video_id']} · {r['frame_ids']}")
+                        label = f"{i}. [TRAKE] {r['video_id']} · {r['frame_ids']}"
                     elif r["mode"] == "qa":
-                        st.caption(f"{i}. [Q&A] {r['video_id']} · frame {r['frame_id']} · \"{r['answer']}\"")
+                        label = f"{i}. [Q&A] {r['video_id']} · frame {r['frame_id']} · \"{r['answer']}\""
                     elif r["mode"] == "temporal":
-                        st.caption(f"{i}. [Temporal] {r['video_id']} · frame {r['frame_id']}")
+                        label = f"{i}. [Temporal] {r['video_id']} · frame {r['frame_id']}"
                     else:
-                        st.caption(f"{i}. [KIS] {r['video_id']} · frame {r['frame_id']}")
+                        label = f"{i}. [KIS] {r['video_id']} · frame {r['frame_id']}"
+
+                    col_label, col_up, col_down, col_del = st.columns([6, 1, 1, 1])
+                    col_label.caption(label)
+                    idx = i - 1
+                    if col_up.button("↑", key=f"submission_up_{idx}", disabled=(idx == 0), help="Di chuyển lên"):
+                        lst[idx - 1], lst[idx] = lst[idx], lst[idx - 1]
+                        st.rerun()
+                    if col_down.button("↓", key=f"submission_down_{idx}", disabled=(idx == len(lst) - 1), help="Di chuyển xuống"):
+                        lst[idx + 1], lst[idx] = lst[idx], lst[idx + 1]
+                        st.rerun()
+                    if col_del.button("✕", key=f"submission_del_{idx}", help="Xoá dòng này"):
+                        lst.pop(idx)
+                        st.rerun()
         else:
             st.caption("Chưa có dòng nào — bấm \"📤 Nộp\" ở từng kết quả, hoặc nút tự động điền.")
 
 
 PLAYBACK_NUDGE_FRAMES = 5  # buoc nhay lui/tien moi lan bam nut </> (theo yeu cau nguoi dung)
+
+
+# 2026-08-20 (theo yeu cau nguoi dung: "frame được bấm chức năng playback sẽ được thay đổi bên
+# ngoài luôn á bạn" - xac nhan trong Playback TRUOC DAY chi doi state RIENG BEN TRONG popup, cac
+# noi hien thi BEN NGOAI (anh/so frame/nut "📤 Nộp" nhanh) van dung frame GOC he thong de xuat,
+# khong doc lai gia tri DA XAC NHAN) - 2 ham duoi day dung CHUNG 1 nguon voi _render_playback
+# (session_state[f"playback_state_{widget_key}"]) de moi noi GOI voi CUNG widget_key deu thay
+# DUNG 1 gia tri, khong con lech nhau.
+def _playback_confirmed_frame_id(widget_key: str, default_frame_id: int) -> int:
+    """Doc frame DA XAC NHAN trong Playback (neu da tung mo + xac nhan) cho 1 the KIS/Q&A (1
+    frame duy nhat) - tra ve default_frame_id (frame goc he thong de xuat) neu chua tung
+    xac nhan gi khac."""
+    state = st.session_state.get(f"playback_state_{widget_key}")
+    return int(state[0]) if state else default_frame_id
+
+
+def _frame_preview_path(video_id: str, frame_id: int, default_frame_id: int, default_path):
+    """Path ảnh để hiển thị cho 1 frame - dùng THẲNG path có sẵn (dense-sampled, rẻ) nếu frame
+    KHÔNG đổi so với đề xuất gốc, ngược lại trích MỚI qua extract_single_frame (frame tuỳ ý do
+    người dùng chọn trong Playback, thường KHÔNG trùng đúng 1 frame dense-sampled có sẵn)."""
+    if frame_id == default_frame_id:
+        return default_path
+    fps = _fps_by_video().get(video_id, 25.0)
+    return str(extract_single_frame(video_id, frame_id / fps))
 
 
 def _render_playback(
@@ -426,117 +572,187 @@ def _render_playback(
     frame_ids/labels: 1 phần tử (KIS/Q&A) hoặc N phần tử theo thứ tự (TRAKE, "Mốc 1".."Mốc n").
     State luu tai session_state[f"playback_state_{widget_key}"] — KHOI TAO 1 LAN tu frame_ids
     truyen vao, cac lan nudge sau CHI doi state (khong doi lai tu frame_ids goc, giu duoc dieu
-    chinh cua nguoi dung qua nhieu lan rerun/mo lai popover)."""
+    chinh cua nguoi dung qua nhieu lan mo lai dialog).
+
+    2026-08-20 (theo yeu cau nguoi dung: "phần playback này khó thao tác... có thể làm cái này
+    bằng cách cho 1 cửa sổ khác không") - DOI tu st.popover() (neo theo vi tri nut, kich thuoc
+    NHO CO DINH, phai cuon rat nhieu ben trong 1 khung chat hep) sang st.dialog() (modal THAT
+    SU, hien GIUA man hinh, rong toi 1280px voi width="large") - _render_playback() gio CHI ve
+    1 nut bam mo dialog, phan noi dung THAT chuyen het sang _playback_dialog() (ham rieng,
+    @st.dialog decorator - goi ham nay MOI THUC SU mo modal, xem Streamlit docs ve dialog)."""
     submit_extra = submit_extra or {}
-    pop = st.popover("🎬", help="Phát toàn bộ video — xem/chỉnh vị trí frame rồi nộp trực tiếp",
-                      on_change="rerun", key=f"playbackpop_{widget_key}")
-    if not pop.open:
-        return
-    with pop:
-        state_key = f"playback_state_{widget_key}"
-        active_key = f"playback_active_{widget_key}"
-        if state_key not in st.session_state:
-            st.session_state[state_key] = list(frame_ids)
-        if active_key not in st.session_state:
-            st.session_state[active_key] = 0
-        cur_frames: list[int] = st.session_state[state_key]
-        active = st.session_state[active_key]
+    if st.button("🎬", key=f"playbackbtn_{widget_key}",
+                 help="Phát toàn bộ video — xem/chỉnh vị trí frame rồi nộp trực tiếp (cửa sổ riêng)"):
+        _playback_dialog(video_id, frame_ids, labels, widget_key, mode, submit_extra)
 
-        fps = _fps_by_video().get(video_id, 25.0)
-        max_frame_arr = _frame_idx_by_video().get(video_id)
-        max_frame = int(max_frame_arr.max()) if max_frame_arr is not None and len(max_frame_arr) else max(cur_frames)
 
-        # Timeline (2026-08-20) - GIONG timeline TRAKE da co (dot + nhan theo % thoi gian), o
-        # day THEM highlight cho marker DANG active (vien do) de phan biet khi co nhieu moc.
-        t_axis_max = max(max_frame / fps, 1.0)
-        timeline_html = '<div style="position:relative;height:40px;background:#eee;border-radius:4px;margin:8px 0;">'
-        for i, fid in enumerate(cur_frames):
-            pct = 100 * (fid / fps) / t_axis_max
-            is_active = i == active
-            dot_style = (
-                "width:14px;height:14px;border:3px solid #16a34a;" if is_active
-                else "width:10px;height:10px;border:none;"
-            )
-            timeline_html += (
-                f'<div style="position:absolute;left:{pct:.1f}%;top:0;transform:translateX(-50%);text-align:center;">'
-                f'<div style="{dot_style}border-radius:50%;background:#d33;margin:0 auto;"></div>'
-                f'<div style="font-size:11px;white-space:nowrap;">{labels[i]}</div></div>'
-            )
-        timeline_html += "</div>"
-        st.markdown(timeline_html, unsafe_allow_html=True)
+@st.dialog("🎬 Playback — xem/chỉnh frame", width="large")
+def _playback_dialog(
+    video_id: str,
+    frame_ids: list[int],
+    labels: list[str],
+    widget_key: str,
+    mode: str,
+    submit_extra: dict,
+) -> None:
+    """Nội dung THẬT của Playback - xem docstring _render_playback (nơi gọi hàm này) cho lý do
+    chuyển từ popover sang dialog. Streamlit tự động re-run ĐÚNG hàm này (không phải toàn bộ
+    script) khi tương tác với widget bên trong (st.dialog kế thừa hành vi st.fragment) - dialog
+    tự giữ mở qua các lần nudge/kéo slider, không cần tự quản lý trạng thái "đang mở"."""
+    state_key = f"playback_state_{widget_key}"
+    active_key = f"playback_active_{widget_key}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = list(frame_ids)
+    if active_key not in st.session_state:
+        st.session_state[active_key] = 0
+    cur_frames: list[int] = st.session_state[state_key]
+    active = st.session_state[active_key]
 
-        # Chon moc dang chinh (chi hien khi >1 frame, tuc TRAKE) - hang nut "#i".
-        if len(cur_frames) > 1:
-            with st.container(horizontal=True, gap="small"):
-                for i in range(len(cur_frames)):
-                    btn_label = f"● {labels[i]}" if i == active else labels[i]
-                    if st.button(btn_label, key=f"playbackpick_{widget_key}_{i}"):
-                        st.session_state[active_key] = i
-                        st.rerun()
+    fps = _fps_by_video().get(video_id, 25.0)
+    max_frame_arr = _frame_idx_by_video().get(video_id)
+    max_frame = int(max_frame_arr.max()) if max_frame_arr is not None and len(max_frame_arr) else max(cur_frames)
 
-        active_frame = cur_frames[active]
-        t = active_frame / fps
-        col_prev, col_cur, col_next = st.columns([1, 2, 1], vertical_alignment="center")
+    # Timeline (2026-08-20) - GIONG timeline TRAKE da co (dot + nhan theo % thoi gian), o
+    # day THEM highlight cho marker DANG active (vien do) de phan biet khi co nhieu moc.
+    t_axis_max = max(max_frame / fps, 1.0)
+    timeline_html = '<div style="position:relative;height:40px;background:#eee;border-radius:4px;margin:8px 0;">'
+    for i, fid in enumerate(cur_frames):
+        pct = 100 * (fid / fps) / t_axis_max
+        is_active = i == active
+        dot_style = (
+            "width:14px;height:14px;border:3px solid #16a34a;" if is_active
+            else "width:10px;height:10px;border:none;"
+        )
+        timeline_html += (
+            f'<div style="position:absolute;left:{pct:.1f}%;top:0;transform:translateX(-50%);text-align:center;">'
+            f'<div style="{dot_style}border-radius:50%;background:#d33;margin:0 auto;"></div>'
+            f'<div style="font-size:11px;white-space:nowrap;">{labels[i]}</div></div>'
+        )
+    timeline_html += "</div>"
+    st.markdown(timeline_html, unsafe_allow_html=True)
+
+    # Chon moc dang chinh (chi hien khi >1 frame, tuc TRAKE) - hang nut "#i".
+    if len(cur_frames) > 1:
+        with st.container(horizontal=True, gap="small"):
+            for i in range(len(cur_frames)):
+                btn_label = f"● {labels[i]}" if i == active else labels[i]
+                if st.button(btn_label, key=f"playbackpick_{widget_key}_{i}"):
+                    st.session_state[active_key] = i
+                    st.rerun()
+
+    active_frame_confirmed = cur_frames[active]
+    # 2026-08-20 (theo yeu cau nguoi dung: "Playback Video – Đồng bộ Frame" - 3 thanh phan
+    # (vi tri thanh keo, so Frame, anh Frame) LUON phai dong nhat, moi cach doi Frame deu
+    # phai cap nhat CA 3). st.video() cua Streamlit KHONG co co che bao lai vi tri scrub ve
+    # Python (gioi han nen tang - HTML5 <video> khong co callback JS-vao-Streamlit san co,
+    # xem docstring PLAYBACK_NUDGE_FRAMES) nen KHONG THE dung thanh keo NATIVE cua video lam
+    # nguon dong bo 2 chieu duoc. Thay bang 1 st.slider (buoc 1 frame) LAM "thanh Video" that
+    # su dieu khien duoc 2 chieu: ca nut </> LAN keo slider DEU ghi vao CUNG 1 session_state
+    # key (pending_key) - anh Frame duoi day trich THANG tu gia tri do (extract_single_frame)
+    # nen 3 thanh phan (slider/so Frame/anh) khong bao gio lech nhau, vi CUNG doc 1 nguon.
+    # video gốc (st.video) o cuoi CHI de xem TU DO quanh do (context), khong phai nguon dong
+    # bo chinh.
+    pending_key = f"playback_pending_{widget_key}_{active}"
+    if pending_key not in st.session_state:
+        st.session_state[pending_key] = active_frame_confirmed
+
+    # 2026-08-20 (theo yeu cau nguoi dung: "mình muốn phần kéo frame và phần video bên dưới
+    # nằm cùng hàng lại... đỡ kéo lên kéo xuống") - 2 COT CANH NHAU (trai: nudge/slider/anh
+    # preview/xac nhan, phai: video goc) thay vi xep DOC nhu truoc - dialog width="large" (toi
+    # 1280px) du rong cho ca 2 cot khong bi chat.
+    col_frame, col_video = st.columns(2)
+    with col_frame:
+        col_prev, col_next = st.columns(2)
         if col_prev.button("◀ -5", key=f"playbackprev_{widget_key}"):
-            cur_frames[active] = max(0, cur_frames[active] - PLAYBACK_NUDGE_FRAMES)
+            st.session_state[pending_key] = max(0, st.session_state[pending_key] - PLAYBACK_NUDGE_FRAMES)
             st.rerun()
-        col_cur.markdown(f"<div style='text-align:center;'>{labels[active]}: frame <code>{active_frame}</code> · t≈{t:.1f}s</div>",
-                          unsafe_allow_html=True)
         if col_next.button("+5 ▶", key=f"playbacknext_{widget_key}"):
-            cur_frames[active] = min(max_frame, cur_frames[active] + PLAYBACK_NUDGE_FRAMES)
+            st.session_state[pending_key] = min(max_frame, st.session_state[pending_key] + PLAYBACK_NUDGE_FRAMES)
             st.rerun()
 
+        pending_frame = st.slider(
+            f"{labels[active]} — Frame (kéo để tìm khoảnh khắc)",
+            min_value=0, max_value=max_frame, step=1, key=pending_key,
+        )
+        t_pending = pending_frame / fps
+
+        try:
+            preview_path = extract_single_frame(video_id, t_pending)
+            st.image(str(preview_path), caption=f"Frame {pending_frame} · t≈{t_pending:.1f}s")
+        except Exception as e:
+            st.error(f"Không trích được ảnh frame xem trước ({e})")
+
+        # Nut xac nhan (2026-08-20, theo yeu cau nguoi dung: "Frame cũ chỉ được thay thế bằng
+        # Frame hiện tại sau khi người dùng xác nhận") - MOI thay doi (slider LAN nut </>) chi
+        # doi gia tri XEM THU (pending) - cur_frames[active] (gia tri THAT SU dung de nop bai,
+        # hien marker tren timeline) CHI doi khi bam nut nay, khong tu dong theo pending.
+        if pending_frame != active_frame_confirmed:
+            st.caption(f"⏳ Đang xem thử frame `{pending_frame}` — frame ĐÃ CHỐT (dùng khi nộp) "
+                       f"vẫn là `{active_frame_confirmed}`.")
+            if st.button("✅ Xác nhận frame này", key=f"playbackconfirm_{widget_key}"):
+                cur_frames[active] = pending_frame
+                st.rerun()
+        else:
+            st.caption(f"✅ Frame đã chốt: `{active_frame_confirmed}`")
+
+    with col_video:
         with st.spinner("Đang tải video gốc (lần đầu có thể chậm)..."):
             try:
                 video_bytes = read_video_bytes(video_id)
             except Exception as e:
                 st.error(f"Không tải được video gốc ({e})")
-                return
-        st.video(video_bytes, start_time=int(t))
+                video_bytes = None
+        if video_bytes is not None:
+            st.video(video_bytes, start_time=int(t_pending))
 
-        if len(cur_frames) > 1:
-            # 2026-08-20 (theo yeu cau nguoi dung: "Quy tắc quan trọng — Format Submit phải phụ
-            # thuộc vào loại task đang chọn... người dùng không phải tự nhập format thủ công") -
-            # `mode` truyen vao ("temporal" hoac "trake", xem sidebar "Loại truy vấn") QUYET
-            # DINH DUY NHAT 1 dinh dang duoc sinh - KHONG con hien ca 2 nut de nguoi dung tu
-            # chon nua (khac ban truoc "Có 2 nút Submit riêng biệt" — da THAY DOI theo yeu cau
-            # moi nay, chinh xac hon: dinh dang phai TU DONG theo mode dang chon, khong phai
-            # nguoi dung tu chon giua 2 nut).
-            #   - mode="temporal": format nhu KIS (video_id, 1 frame_id DUY NHAT) - frame = frame
-            #     GIUA cua cac frame tuong ung (median, khong phai trung binh cong - "lấy frame
-            #     giữa" dung nghia la phan tu O GIUA khi sap xep, khong phai noi suy).
-            #   - mode="trake": format day du (video_id, frame_id_1, ..., frame_id_n) - vd
-            #     "L10_V001,1200,1850,2100,2450".
-            changed = cur_frames != list(frame_ids)
-            if changed:
-                st.caption("✏️ Đã chỉnh so với đề xuất gốc — nộp sẽ dùng giá trị ĐÃ CHỈNH.")
-            if mode == "temporal":
-                median_frame = int(statistics.median(cur_frames))
-                st.caption(f"Loại truy vấn hiện tại: **Temporal** — frame giữa = `{median_frame}`")
-                _render_submit_button(
-                    "temporal", {"video_id": video_id, "frame_id": median_frame},
-                    f"playbacksubmit_{widget_key}", label="Temporal",
-                )
-            else:
-                st.caption("Loại truy vấn hiện tại: **TRAKE** — nộp đủ cả chuỗi")
-                _render_submit_button(
-                    "trake", {"video_id": video_id, "frame_ids": list(cur_frames)},
-                    f"playbacksubmit_{widget_key}", label="TRAKE",
-                )
+    if len(cur_frames) > 1:
+        # 2026-08-20 (theo yeu cau nguoi dung: "Quy tắc quan trọng — Format Submit phải phụ
+        # thuộc vào loại task đang chọn... người dùng không phải tự nhập format thủ công") -
+        # `mode` truyen vao ("temporal" hoac "trake", xem sidebar "Loại truy vấn") QUYET
+        # DINH DUY NHAT 1 dinh dang duoc sinh - KHONG con hien ca 2 nut de nguoi dung tu
+        # chon nua (khac ban truoc "Có 2 nút Submit riêng biệt" — da THAY DOI theo yeu cau
+        # moi nay, chinh xac hon: dinh dang phai TU DONG theo mode dang chon, khong phai
+        # nguoi dung tu chon giua 2 nut).
+        #   - mode="temporal": format nhu KIS (video_id, 1 frame_id DUY NHAT) - frame = frame
+        #     GIUA cua cac frame tuong ung (median, khong phai trung binh cong - "lấy frame
+        #     giữa" dung nghia la phan tu O GIUA khi sap xep, khong phai noi suy).
+        #   - mode="trake": format day du (video_id, frame_id_1, ..., frame_id_n) - vd
+        #     "L10_V001,1200,1850,2100,2450".
+        changed = cur_frames != list(frame_ids)
+        if changed:
+            st.caption("✏️ Đã chỉnh so với đề xuất gốc — nộp sẽ dùng giá trị ĐÃ CHỈNH.")
+        if mode == "temporal":
+            median_frame = int(statistics.median(cur_frames))
+            st.caption(f"Loại truy vấn hiện tại: **Temporal** — frame giữa = `{median_frame}`")
+            _render_submit_button(
+                "temporal", {"video_id": video_id, "frame_id": median_frame},
+                f"playbacksubmit_{widget_key}", label="Temporal",
+            )
         else:
-            # 2026-08-20 (theo yeu cau nguoi dung: "VQA... Có thêm ô nhập câu trả lời") - CHI
-            # hien voi Q&A (mode="qa") - o nhap CO THE CHINH lai cau tra loi (mac dinh = answer
-            # co san trong submit_extra, RONG neu LVLM dang tat - xem submission_pipeline.
-            # answer_qa use_lvlm) TRUOC khi nop, khong bat buoc dung nguyen VQA tu dong.
-            if mode == "qa":
-                answer_key = f"playback_answer_{widget_key}"
-                if answer_key not in st.session_state:
-                    st.session_state[answer_key] = submit_extra.get("answer", "")
-                answer = st.text_input("Câu trả lời", key=answer_key)
-                submit_row = {"video_id": video_id, "frame_id": cur_frames[0], "answer": answer}
-            else:
-                submit_row = {"video_id": video_id, "frame_id": cur_frames[0], **submit_extra}
-            _render_submit_button(mode, submit_row, f"playbacksubmit_{widget_key}")
+            # 2026-08-20 (theo yeu cau nguoi dung: "Mode TRAKE... Không có nút Submit bên
+            # trong Playback Video... chỉ có nút Submit bên ngoài Playback") - BO nut Submit
+            # o day cho rieng TRAKE (Temporal van giu nguyen o nhanh "if mode == temporal"
+            # phia tren, KHONG bi anh huong - nguoi dung chi noi ro "Mode TRAKE"). Nop TRAKE
+            # gio CHI qua nut "📤 Nộp" ben ngoai Playback (cap video, xem vong lap ket qua) -
+            # van doc DUNG frame DA XAC NHAN trong Playback nay (qua playback_state, xem
+            # _playback_confirmed_frame_id/_trake_chain_key o noi goi), khong mat gi ca, chi
+            # bot 1 nut trung lap trong popup.
+            st.caption("Loại truy vấn hiện tại: **TRAKE** — nộp đủ cả chuỗi bằng nút "
+                       "\"📤 Nộp\" BÊN NGOÀI Playback (đã tự đọc đúng frame vừa xác nhận ở đây).")
+    else:
+        # 2026-08-20 (theo yeu cau nguoi dung: "VQA... Có thêm ô nhập câu trả lời") - CHI
+        # hien voi Q&A (mode="qa") - o nhap CO THE CHINH lai cau tra loi (mac dinh = answer
+        # co san trong submit_extra, RONG neu LVLM dang tat - xem submission_pipeline.
+        # answer_qa use_lvlm) TRUOC khi nop, khong bat buoc dung nguyen VQA tu dong.
+        if mode == "qa":
+            answer_key = f"playback_answer_{widget_key}"
+            if answer_key not in st.session_state:
+                st.session_state[answer_key] = submit_extra.get("answer", "")
+            answer = st.text_input("Câu trả lời", key=answer_key)
+            submit_row = {"video_id": video_id, "frame_id": cur_frames[0], "answer": answer}
+        else:
+            submit_row = {"video_id": video_id, "frame_id": cur_frames[0], **submit_extra}
+        _render_submit_button(mode, submit_row, f"playbacksubmit_{widget_key}")
 
 
 def _render_floating_video_player() -> None:
@@ -594,6 +810,24 @@ with st.sidebar:
     # "temporal" (format nhu KIS, 1 frame GIUA) hoac "trake" (format day du N frame) - dung de
     # nut Submit trong Playback/nut nhanh TU DONG chon DUNG 1 dinh dang, khong hoi lai.
     _temporal_submit_mode = "temporal" if mode == "Temporal" else "trake"
+
+    # 2026-08-20 (theo yeu cau nguoi dung, phat hien qua case that GT L26_V194 [4700,5125,5450,
+    # 5850] - 2/3 khoang cach that (17s/16s) VUOT nguong cu 15s, khien anchor-chain LOAI HAN cap
+    # moc dung, chon nham cum frame sai gan nhau hon - xem dense_temporal.py::MAX_ANCHOR_GAP_
+    # SECONDS) - THAY VI sua code moi lan gap case moi, cho nguoi dung TU CHINH ngay tren UI khi
+    # dang chay Temporal/TRAKE. Chi hien khi is_temporal (khong lien quan KIS/Q&A).
+    max_gap_seconds = dense_temporal.MAX_ANCHOR_GAP_SECONDS
+    if is_temporal:
+        max_gap_seconds = st.slider(
+            "Khoảng cách tối đa giữa 2 mốc liên tiếp (giây)",
+            min_value=1.0, max_value=60.0, value=dense_temporal.MAX_ANCHOR_GAP_SECONDS, step=1.0,
+            help="RÀNG BUỘC CỨNG (không phải phạt điểm) — mốc sau PHẢI cách mốc trước không quá "
+            "N giây, nếu không sẽ bị loại hẳn khỏi xét, dù điểm khớp cao. Đặt QUÁ THẤP có thể "
+            "loại oan chuỗi mốc đúng (case thật: 2 mốc cách nhau 17s bị loại khi ngưỡng=15s, hệ "
+            "thống chọn nhầm 1 cụm khác sai nhưng gần nhau). Đặt QUÁ CAO dễ ghép nhầm các đoạn "
+            "không liên quan cách xa nhau (case thật: ghép nhầm 2 cảnh cách nhau 65s). "
+            f"Mặc định {dense_temporal.MAX_ANCHOR_GAP_SECONDS:.0f}s.",
+        )
 
     st.divider()
     st.header("Bộ lọc (tuỳ chọn)")
@@ -1089,7 +1323,8 @@ if run and ready:
             results = dense_temporal.search(
                 anchors, top_k=top_k, dense_model=dense_model,
                 spatial_boxes=spatial_boxes, spatial_op=spatial_op, ocr_algorithm=ocr_algorithm,
-                asr_text=_asr_text, score_algorithm=score_algorithm, distill_model=distill_model, log=log,
+                asr_text=_asr_text, score_algorithm=score_algorithm, distill_model=distill_model,
+                max_gap_seconds=max_gap_seconds, log=log,
             )
         else:
             # 2026-08-20 (theo yeu cau nguoi dung: "trước đó mình muốn thêm option cho [LLM
@@ -1254,32 +1489,36 @@ if "last_search" in st.session_state:
         for i, row in results.iterrows():
             col = cols[i % 4]
             with col:
-                _render_image_with_vlm_overlay(row["path"], f"qa_{i}")
+                _qa_key = f"qa_{i}"
+                _default_frame_id = int(row["frame_id"])
+                # 2026-08-20 (theo yeu cau nguoi dung: "frame được bấm chức năng playback sẽ
+                # được thay đổi bên ngoài luôn") - xem ghi chu day du o nhanh KIS phia tren.
+                _eff_frame_id = _playback_confirmed_frame_id(_qa_key, _default_frame_id)
+                _eff_path = _frame_preview_path(row["video_id"], _eff_frame_id, _default_frame_id, row["path"])
+                _render_image_with_vlm_overlay(_eff_path, _qa_key)
                 backfill_tag = " 🔓" if row.get("is_backfill") else ""
+                edited_tag = " ✏️" if _eff_frame_id != _default_frame_id else ""
                 if _r_use_lvlm:
                     vqa_tag = "🔎 VQA thật" if i < _r_vqa_top_n else "↪ dùng lại rank 1"
                     st.markdown(
-                        f"**{row['video_id']}**{backfill_tag} · frame `{row['frame_id']}` ({vqa_tag})  \n"
+                        f"**{row['video_id']}**{backfill_tag}{edited_tag} · frame `{_eff_frame_id}` ({vqa_tag})  \n"
                         f"**Trả lời:** {row['answer']}"
                     )
                 else:
-                    st.markdown(f"**{row['video_id']}**{backfill_tag} · frame `{row['frame_id']}`")
+                    st.markdown(f"**{row['video_id']}**{backfill_tag}{edited_tag} · frame `{_eff_frame_id}`")
                 # 2026-08-20 (theo yeu cau nguoi dung: "cho mấy cái nút này nằm trên 1 hàng...
                 # chỉ cần có các icon") - st.container(horizontal=True) (KHONG phai st.columns,
                 # xem ghi chu TRAKE anchor row cu ve ly do chon API nay) giu CA 4 nut TREN 1
                 # HANG, khong bi wrap xuong dong nhu columns hep.
                 with st.container(horizontal=True, gap="small"):
-                    _render_video_toggle(row["video_id"], int(row["frame_id"]), f"qa_{i}")
+                    _render_video_toggle(row["video_id"], _eff_frame_id, _qa_key)
                     _render_playback(
-                        row["video_id"], [int(row["frame_id"])], ["Frame"], f"qa_{i}", "qa",
+                        row["video_id"], [_default_frame_id], ["Frame"], _qa_key, "qa",
                         submit_extra={"answer": row["answer"]},
                     )
-                    _render_vlm_ocr_verify(row["path"], row["video_id"], int(row["frame_id"]), f"qa_{i}")
-                    _render_submit_button(
-                        "qa",
-                        {"video_id": row["video_id"], "frame_id": int(row["frame_id"]), "answer": row["answer"]},
-                        f"qa_{i}",
-                    )
+                    _render_vlm_ocr_verify(_eff_path, row["video_id"], _eff_frame_id, _qa_key)
+                    _render_qa_submit_toggle(row["video_id"], _eff_frame_id, _qa_key)
+                _render_qa_submit_panel(row["video_id"], _eff_frame_id, row["answer"], _qa_key)
     elif _r_is_temporal:
         _r_mode_label_top = "Temporal" if _r_temporal_submit_mode == "temporal" else "TRAKE"
         st.caption(f"{len(results)} video khớp chuỗi {len(_r_anchors)} anchor (đúng thứ tự thời gian) — "
@@ -1309,24 +1548,42 @@ if "last_search" in st.session_state:
             st.markdown(timeline_html, unsafe_allow_html=True)
 
             cols = st.columns(len(_r_anchors))
+            # 2026-08-20 (theo yeu cau nguoi dung: "frame được bấm chức năng playback sẽ được
+            # thay đổi bên ngoài luôn") - tinh _trake_chain_key TU FRAME GOC (on dinh, khong doi
+            # theo chinh sua) TRUOC vong lap moc, doc lai chuoi DA XAC NHAN qua playback_state
+            # (CUNG nguon voi _render_playback ben duoi - KHONG con dung trake_frame_overrides,
+            # xem _overrides ben duoi CHI con la fallback tuong thich cho _render_trake_frame_
+            # tune cu, hien khong con noi nao goi toi nhung giu de khong gay loi neu bat lai sau).
+            _default_chain_frame_ids = [int(row[f"anchor{i}_frame_id"]) for i in range(len(_r_anchors))]
+            _trake_chain_key = f"trakechain_{row['video_id']}_{'_'.join(map(str, _default_chain_frame_ids))}"
+            _confirmed_chain = st.session_state.get(f"playback_state_{_trake_chain_key}", _default_chain_frame_ids)
             _overrides = st.session_state.get("trake_frame_overrides", {})
             _chain_frame_ids = []  # gom lai frame_id (DA tinh chinh neu co) cua CA chuoi, dung
             # cho nut "Nộp" cap VIDEO ben duoi (1 dong nop bai = 1 video + N frame_id, khong
             # phai 1 dong/moc).
             for i, anchor in enumerate(_r_anchors):
                 with cols[i]:
-                    # 2026-08-20 (theo yeu cau nguoi dung: "tinh chỉnh lại frame... approve
-                    # frame mong muốn") - neu moc nay DA duoc duyet qua _render_trake_frame_tune
-                    # (xem ham do), dung frame/path DA CHINH thay cho ket qua goc tu thuat toan -
-                    # CHI anh huong HIEN THI trong phien nay, KHONG ghi de len ket qua that/xep
-                    # hang (van luu rieng qua trake_corrections.py de tham khao/cai thien sau).
+                    _default_frame_id = _default_chain_frame_ids[i]
                     _ov = _overrides.get((row["video_id"], i))
-                    _frame_id = _ov["frame_id"] if _ov else int(row[f"anchor{i}_frame_id"])
-                    _pts_time = _ov["pts_time"] if _ov else float(row[f"anchor{i}_pts_time"])
-                    _img_path = _ov["path"] if _ov else row[f"anchor{i}_path"]
+                    if _confirmed_chain[i] != _default_frame_id:
+                        # DA xac nhan frame moi trong Playback (uu tien cao nhat - moi nhat).
+                        _frame_id = int(_confirmed_chain[i])
+                        _pts_time = _frame_id / _fps_by_video().get(row["video_id"], 25.0)
+                        _img_path = _frame_preview_path(
+                            row["video_id"], _frame_id, _default_frame_id, row[f"anchor{i}_path"]
+                        )
+                        _edited = True
+                    elif _ov:
+                        # fallback cu (_render_trake_frame_tune) - xem ghi chu tren.
+                        _frame_id, _pts_time, _img_path, _edited = _ov["frame_id"], _ov["pts_time"], _ov["path"], True
+                    else:
+                        _frame_id = _default_frame_id
+                        _pts_time = float(row[f"anchor{i}_pts_time"])
+                        _img_path = row[f"anchor{i}_path"]
+                        _edited = False
                     _chain_frame_ids.append(_frame_id)
 
-                    _trake_widget_key = f"trake_{row['video_id']}_{i}_{int(row[f'anchor{i}_frame_id'])}"
+                    _trake_widget_key = f"trake_{row['video_id']}_{i}_{_default_frame_id}"
                     # 2026-08-15 (migrate sang bo dense): doc anh THANG tu row[f"anchor{i}_path"]
                     # (dia local), khong qua Keyframes_*.zip cua BTC nua (xem tiers/dense_temporal.py).
                     _render_image_with_vlm_overlay(_img_path, _trake_widget_key)
@@ -1335,7 +1592,7 @@ if "last_search" in st.session_state:
                         extra.append(f"nhãn: {anchor['must_have_labels']}")
                     if anchor.get("ocr_text"):
                         extra.append(f"OCR: \"{anchor['ocr_text']}\"")
-                    if _ov:
+                    if _edited:
                         extra.append("✅ đã tinh chỉnh thủ công")
                     extra_str = f"  \n_{' · '.join(extra)}_" if extra else ""
                     st.caption(
@@ -1352,7 +1609,8 @@ if "last_search" in st.session_state:
             # moc rieng) - hien CA CHUOI tren 1 timeline, chinh + nop trong CUNG 1 cho (thay the
             # 2 nut rieng 🎬/🎯 tung moc truoc day). Nut nop nhanh ben ngoai (frame he thong de
             # xuat, KHONG qua chinh) van giu song song cho truong hop khong can chinh gi.
-            _trake_chain_key = f"trakechain_{row['video_id']}_{'_'.join(map(str, _chain_frame_ids))}"
+            # (_trake_chain_key da tinh TRUOC vong lap moc o tren - dung LAI, KHONG tinh lai tu
+            # _chain_frame_ids da chinh, tranh key TU DOI theo gia tri no dang dung de doc).
             with st.container(horizontal=True, gap="small"):
                 # 2026-08-20 (theo yeu cau nguoi dung: "Format Submit phải phụ thuộc vào loại
                 # task đang chọn") - `_r_temporal_submit_mode` ("temporal"/"trake") lay TU MODE
@@ -1383,17 +1641,26 @@ if "last_search" in st.session_state:
         for i, row in results.iterrows():
             col = cols[i % 4]
             with col:
-                _render_image_with_vlm_overlay(row["path"], f"kis_{i}")
+                _kis_key = f"kis_{i}"
+                _default_frame_id = int(row["frame_id"])
+                # 2026-08-20 (theo yeu cau nguoi dung: "frame được bấm chức năng playback sẽ
+                # được thay đổi bên ngoài luôn") - doc lai frame DA XAC NHAN (neu co) thay vi
+                # luon dung frame goc he thong de xuat - anh/caption/nut Nộp nhanh BEN NGOAI
+                # Playback gio DONG BO theo dung gia tri da chot trong popup.
+                _eff_frame_id = _playback_confirmed_frame_id(_kis_key, _default_frame_id)
+                _eff_path = _frame_preview_path(row["video_id"], _eff_frame_id, _default_frame_id, row["path"])
+                _render_image_with_vlm_overlay(_eff_path, _kis_key)
                 # 🔓 = ket qua BU THEM (khong khop bo loc cung, xem is_backfill o dense_search.py)
                 backfill_tag = " 🔓" if row.get("is_backfill") else ""
+                edited_tag = " ✏️" if _eff_frame_id != _default_frame_id else ""
                 st.markdown(
-                    f"**{row['video_id']}**{backfill_tag} · frame `{row['frame_id']}` · score={row['score']:.3f}"
+                    f"**{row['video_id']}**{backfill_tag}{edited_tag} · frame `{_eff_frame_id}` · score={row['score']:.3f}"
                 )
                 with st.container(horizontal=True, gap="small"):
-                    _render_video_toggle(row["video_id"], int(row["frame_id"]), f"kis_{i}")
-                    _render_playback(row["video_id"], [int(row["frame_id"])], ["Frame"], f"kis_{i}", "kis")
-                    _render_vlm_ocr_verify(row["path"], row["video_id"], int(row["frame_id"]), f"kis_{i}")
-                    _render_submit_button("kis", {"video_id": row["video_id"], "frame_id": int(row["frame_id"])}, f"kis_{i}")
+                    _render_video_toggle(row["video_id"], _eff_frame_id, _kis_key)
+                    _render_playback(row["video_id"], [_default_frame_id], ["Frame"], _kis_key, "kis")
+                    _render_vlm_ocr_verify(_eff_path, row["video_id"], _eff_frame_id, _kis_key)
+                    _render_submit_button("kis", {"video_id": row["video_id"], "frame_id": _eff_frame_id}, _kis_key)
 
     _render_elapsed = time.perf_counter() - _t_render_start
     # 2026-08-15 (theo yeu cau nguoi dung: "dong chu do nam trong bang step log luon" + "phan

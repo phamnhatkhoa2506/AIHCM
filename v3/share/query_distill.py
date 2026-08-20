@@ -126,6 +126,28 @@ def _call_gemma(model: str, system_prompt: str, user_content: str) -> str:
     return answer_parts[-1].strip()
 
 
+# 2026-08-20 (theo yeu cau nguoi dung, phat hien qua case that "hệ thống bị bất định" - CUNG 1
+# cau "con chó" luc dung luc sai, KHONG doi code gi ca): do LLM NIM (du temperature=0.0) VAN
+# TROI cach viet hoa giua cac lan goi CUNG 1 cau (da biet tu truoc, xem @lru_cache o duoi) - vd
+# co lan tra "A Dog." (Title Case), co lan tra "A dog." (sentence case). Da do TRUC TIEP tren
+# ma tran that: "A Dog." xep hang #138916/369589 cho 1 frame CHO THAT (SigLIP2), "A dog." (CHI
+# khac o 1 chu cai hoa/thuong) xep hang #6969 - LECH ~20 LAN chi vi viet hoa giua cau. SigLIP2
+# (co the ca PE-Core/BEiT-3) RAT NHAY voi kieu viet hoa nay - Title Case lam hong embedding ro
+# ret. Chuan hoa CUNG 1 kieu (sentence case - chi viet hoa ky tu dau tien) NGAY SAU KHI LLM tra
+# ve (xem _normalize_case duoi day) de loai BO HOAN TOAN nguon bat dinh nay, khong phu thuoc
+# LLM co nhat quan hay khong.
+def _normalize_case(text: str) -> str:
+    """Ep ve sentence case (chi viet hoa ky tu dau tien, con lai thuong) - xem ghi chu o tren.
+    KHONG dung str.capitalize() (no cung ha het CAC TU SAU ve thuong nhu the nay, giong het
+    y muon, nhung .capitalize() con lam sai voi chuoi bat dau bang so/ky tu dac biet - tu lam
+    tay de kiem soat ro rang hon)."""
+    text = text.strip()
+    if not text:
+        return text
+    lowered = text.lower()
+    return lowered[0].upper() + lowered[1:]
+
+
 SYSTEM_PROMPT = """You translate a Vietnamese video-search query into a SHORT English caption
 for a CLIP-family image-text embedding model (SigLIP2/PE-Core/BEiT-3).
 
@@ -282,6 +304,7 @@ def distill_query(query_vi: str, model: str = DEFAULT_DISTILL_MODEL) -> str:
             )
             content = resp.choices[0].message.content.strip()
         content = content.removeprefix("```").removesuffix("```").strip().strip('"')
+        content = _normalize_case(content)
         return content or query_vi
     except openai.APITimeoutError as e:
         # 2026-08-20 (theo yeu cau nguoi dung) - KHAC voi except Exception rong duoi day (fallback

@@ -92,7 +92,14 @@ class _Pick:
 # nen ep qua chat (vd 1-2s) co the khong con ung vien nao kha thi trong nhieu video. Chon muc
 # trung dung (15s) - du hep de loai cac cap "cach xa hang chuc giay" ro rang sai (nhu case
 # 65 giay o tren), nhung van du rong cho pool ung vien thua (do mat do dense) khong bi trang.
-MAX_ANCHOR_GAP_SECONDS = 15.0
+#
+# 2026-08-20 (theo yeu cau nguoi dung, phat hien qua case that GT L26_V194 [4700,5125,5450,5850],
+# TRAKE 4-moc "bột măng tây... rời chảo dầu"): 15s VAN QUA CHAT - 2/3 khoang cach GT that la
+# 17.0s va 16.0s, VUOT nguong -> DAY LA RANG BUOC CUNG (_temporal_join dung sliding-window LOAI
+# HAN ung vien ngoai [t-max_gap, t), khong phai phat diem) nen thuat toan KHONG BAO GIO xet duoc
+# cap moc dung, buoc phai chon 1 cum frame SAI nhung gan nhau de thoa man rang buoc. Tang len
+# 25s - du rong cho case 17s nay + margin, van loai duoc case 65s ro rang sai da phat hien truoc.
+MAX_ANCHOR_GAP_SECONDS = 25.0
 
 
 def _temporal_join(
