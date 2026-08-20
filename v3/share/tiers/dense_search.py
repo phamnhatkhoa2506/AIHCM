@@ -50,7 +50,7 @@ import faiss
 import numpy as np
 import pandas as pd
 
-from app_flags import ModalTimeoutError, call_modal_with_timeout
+from app_flags import call_modal_with_timeout
 from config import DENSE_DIR, DENSE_META_PATH, INDEX_DIR
 from label_translate import resolve as resolve_label_vi
 from local_text_encoders import ENCODERS
@@ -65,11 +65,17 @@ from tiers.tier1_filter import (
     match_words,
 )
 
-OCR_TEXT_PATH = DENSE_DIR / "ocr_text.parquet"  # xem build_dense_ocr_index.py - schema:
+# 2026-08-21 (theo yeu cau nguoi dung: don Runtime/ thanh 1 THU MUC PHANG, khong con thu muc con
+# dense/) - truoc day DENSE_DIR la 1 thu muc RIENG nen ocr_text.parquet/objects_index.parquet/
+# asr_text.parquet cua dense KHONG dung ten voi ban goc BTC (INDEX_DIR o tren, xem resources.py).
+# Gop phang lam 2 ban TRUNG TEN GHI DE LEN NHAU that (phat hien qua nguoi dung hoi khac nhau the
+# nao giua meta.parquet/dense_meta.parquet) - da khoi phuc ban BTC goc tu backup v3/index/, doi
+# ten 3 file cua dense them tien to "dense_" de KHONG con dung ten voi ban INDEX_DIR nua.
+OCR_TEXT_PATH = DENSE_DIR / "dense_ocr_text.parquet"  # xem build_dense_ocr_index.py - schema:
 # video_id, frame_idx, text_raw, text_norm, ymin/xmin/ymax/xmax, score. KHAC ocr_text.parquet
 # sparse (co local_idx_start/end, da gom "run") - o day 1 dong/dong chu/frame THANG, khong gom,
 # vi frame dense khong deu theo shot (xem docstring build_dense_ocr_index.py).
-OBJECTS_INDEX_PATH = DENSE_DIR / "objects_index.parquet"  # xem build_dense_objects_shard.py -
+OBJECTS_INDEX_PATH = DENSE_DIR / "dense_objects_index.parquet"  # xem build_dense_objects_shard.py -
 # schema: video_id, frame_idx, label, score, ymin/xmin/ymax/xmax, source ("owlv2", closed-set
 # 514 nhan, TOAN BO 369,589 anh - xem hoi thoai 2026-08-14/15).
 DENSE_MODES = ["siglip", "pe_core", "beit3", "rrf"]
@@ -174,28 +180,39 @@ def _load_objects_index() -> pd.DataFrame | None:
 
 
 # ============================================================ Region-CLIP rerank (2026-08-15)
-# 2 CHE DO qua bien moi truong AIC_LOCAL_MODELS (giong local_text_encoders.py, mac dinh TAT):
+# 2 CHE DO qua bien moi truong AIC_LOCAL_REGION_CLIP (2026-08-20: tach rieng khoi AIC_LOCAL_
+# DENSE_INDEX, xem _local_mode_for o tren - AIC_LOCAL_MODELS van la fallback chung neu khong dat
+# rieng), mac dinh TAT:
 #   - TAT (mac dinh): goi .remote() toi server Modal nhe luon giu am (aic2026-region-rerank,
 #     xem offline/modal_infra/region_rerank_app.py) - may local CHI gui (video_id, frame_id) +
 #     nhan + cau thuoc tinh (rat nhe), khong giu region_embeddings_siglip.npy (5.3GB) trong RAM.
-#   - BAT (AIC_LOCAL_MODELS=1): nap 5.3GB embedding + scope_detections_cache.parquet TRUC TIEP
-#     tren may (README.md "Chay model local") - cham/an RAM lan dau phien Streamlit, nhung
+#   - BAT (AIC_LOCAL_REGION_CLIP=1): nap 5.3GB embedding + scope_detections_cache.parquet TRUC
+#     TIEP tren may (README.md "Chay model local") - cham/an RAM lan dau phien Streamlit, nhung
 #     khong can Modal/mang cho moi query.
 REGION_RERANK_APP_NAME = "aic2026-region-rerank"
 REGION_RERANK_CLASS_NAME = "RegionRerankServer"
 REGION_CLIP_WEIGHT = 0.5  # cung gia tri voi ban BTC cu (query_planner.py) - da tune truoc do
 
-REGION_SCOPE_CACHE_PATH = DENSE_DIR / "shards" / "_scope_detections_cache.parquet"
+# 2026-08-21: Runtime/ gio phang (khong con thu muc con "shards/"), file nam thang trong DENSE_DIR.
+REGION_SCOPE_CACHE_PATH = DENSE_DIR / "_scope_detections_cache.parquet"
 REGION_EMB_PATH = DENSE_DIR / "region_embeddings_siglip.npy"
 REGION_EMB_IDS_PATH = DENSE_DIR / "region_embeddings_siglip_detection_ids.npy"
 
 
-def _local_mode() -> bool:
-    """Bien moi truong AIC_LOCAL_MODELS (giong local_text_encoders.py) - dung CHUNG cho ca
-    Region-CLIP rerank VA dense index (Tier 2 vector search, xem _load_dense_index/_rank_single
-    duoi day) - 1 cong tac DUY NHAT bat/tat toan bo "chay local thay vi Modal"."""
+# 2026-08-20 (theo yeu cau nguoi dung: "với chế độ local cho toàn bộ, thêm env variable để
+# chọn có load region clip embedding, dense_index, hay query encoder nhé") - TRUOC DAY 1 bien
+# AIC_LOCAL_MODELS DUY NHAT bat/tat CA Region-CLIP LAN dense index CUNG LUC (khong chon rieng
+# duoc). Gio 2 cong tac RIENG: AIC_LOCAL_REGION_CLIP / AIC_LOCAL_DENSE_INDEX (0/1) - AIC_LOCAL_
+# MODELS (bien CU) VAN GIU lam gia tri MAC DINH CHUNG khi bien rieng khong dat (tuong thich
+# nguoc, khong pha cau hinh "AIC_LOCAL_MODELS=1 bat tat ca" cua ai dang dung).
+def _local_mode_for(component: str) -> bool:
+    """component: "region_clip"|"dense_index". Env RIENG AIC_LOCAL_<TEN> uu tien tuyet doi -
+    neu KHONG dat, fallback ve AIC_LOCAL_MODELS."""
     import os
 
+    specific = os.environ.get(f"AIC_LOCAL_{component.upper()}")
+    if specific is not None:
+        return specific.strip().lower() in ("1", "true", "yes")
     return os.environ.get("AIC_LOCAL_MODELS", "0").strip().lower() in ("1", "true", "yes")
 
 
@@ -317,7 +334,7 @@ def apply_region_clip_rerank(
                 continue
 
             try:
-                if _local_mode():
+                if _local_mode_for("region_clip"):
                     scores = _local_region_rerank().rerank(frame_keys, entity_labels, attribute_text)
                 else:
                     # 2026-08-20 (theo yeu cau nguoi dung, tiep tuc sau timeout NIM) - .remote()
@@ -326,7 +343,7 @@ def apply_region_clip_rerank(
                     # graceful-degrade cu (coi nhu khong khop, khong lam sap ca query).
                     scores = call_modal_with_timeout(
                         _region_rerank_server().rerank, frame_keys, entity_labels, attribute_text,
-                        context="Region-CLIP rerank",
+                        context="Region-CLIP rerank", local_env_hint="AIC_LOCAL_REGION_CLIP",
                     )
             except Exception as e:
                 scores = [0.0] * len(results)
@@ -669,7 +686,9 @@ def _ocr_candidates(ocr_text: str, algorithm: str = DEFAULT_OCR_ALGORITHM) -> se
 
 
 # ============================================================ ASR boost (2026-08-15)
-ASR_TEXT_PATH = DENSE_DIR / "asr_text.parquet"  # xem offline/build_dense_asr_index.py - schema:
+ASR_TEXT_PATH = DENSE_DIR / "dense_asr_text.parquet"  # 2026-08-21: doi ten (xem ghi chu OCR_TEXT_PATH
+# o tren - Runtime/ gio phang, tranh trung ten voi resources.ASR_TEXT_PATH ban BTC).
+# xem offline/build_dense_asr_index.py - schema:
 # video_id, frame_idx_start, frame_idx_end, start, end (giay), text_raw (= text_refined da qua
 # LLM sua), text_norm.
 META_PATH = INDEX_DIR / "meta.parquet"  # video-level fps, dung chung BTC/dense (khong doi theo
@@ -1091,21 +1110,16 @@ def _rank_single_remote(
     if candidates is not None and not candidates:
         return pd.DataFrame(columns=_EMPTY_RANK_COLUMNS)
     candidate_keys = [[vid, int(fid)] for vid, fid in candidates] if candidates is not None else None
-    try:
-        # 2026-08-20 (theo yeu cau nguoi dung, tiep tuc sau timeout NIM: diem treo THAT SU la
-        # .remote() khong co timeout) - dung call_modal_with_timeout thay vi .remote() truc tiep.
-        rows = call_modal_with_timeout(
-            _dense_index_server().rank, model, qvec[0].tolist(), top_k, candidate_keys,
-            light=True, context=f"xếp hạng {model}",
-        )
-    except ModalTimeoutError:
-        raise
-    except Exception as e:
-        raise RuntimeError(
-            f"Không gọi được server Modal aic2026-dense-index ({type(e).__name__}: {e}) — "
-            f"đã deploy chưa? (modal deploy offline/modal_infra/dense_index_app.py), hoặc "
-            f"set AIC_LOCAL_MODELS=1 để chạy local (xem README.md)."
-        ) from e
+    # 2026-08-20 (theo yeu cau nguoi dung, tiep tuc sau timeout NIM: diem treo THAT SU la
+    # .remote() khong co timeout) - dung call_modal_with_timeout thay vi .remote() truc tiep.
+    # ModalTimeoutError/ModalUnavailableError (xem app_flags.py - 2026-08-20 them, cau hoi
+    # nguoi dung "nếu không có cả modal thì có fallback") TU BAY LEN, KHONG can bat/boc lai o
+    # day nua - call_modal_with_timeout() da tao thong bao du ro rang + goi y AIC_LOCAL_DENSE_
+    # INDEX qua local_env_hint, boc them 1 lop RuntimeError o day chi lam trung lap/mat thong tin.
+    rows = call_modal_with_timeout(
+        _dense_index_server().rank, model, qvec[0].tolist(), top_k, candidate_keys,
+        light=True, context=f"xếp hạng {model}", local_env_hint="AIC_LOCAL_DENSE_INDEX",
+    )
     if not rows:
         return pd.DataFrame(columns=_EMPTY_RANK_COLUMNS)
 
@@ -1151,10 +1165,11 @@ def _rank_single(
     lai chinh ham nay 3 lan, xem _rank_rrf duoi, nen tu no da duoc log rieng tung model).
 
     2026-08-16: viec XEP HANG THAT (doc matrix/faiss) gio o 1 trong 2 noi qua bien moi truong
-    AIC_LOCAL_MODELS (_local_mode()) - xem _rank_single_local/_rank_single_remote."""
+    AIC_LOCAL_DENSE_INDEX (_local_mode_for("dense_index")) - xem _rank_single_local/_rank_
+    single_remote."""
     with (log.timed(f"Encode query + xếp hạng — {model}") if log else contextlib.nullcontext(lambda *_a, **_k: None)) as set_detail:
         qvec = _encode_query(query, model)
-        if _local_mode():
+        if _local_mode_for("dense_index"):
             result = _rank_single_local(qvec, model, top_k, candidates)
         else:
             result = _rank_single_remote(qvec, model, top_k, candidates)
@@ -1373,6 +1388,7 @@ def _combine_candidates(
     date_from: str | None = None,
     date_to: str | None = None,
     keywords_any: list[str] | None = None,
+    video_ids: list[str] | None = None,
     must_have_labels: list[str] | None = None,
     min_count: dict[str, int] | None = None,
     ocr_text: str | None = None,
@@ -1385,7 +1401,7 @@ def _combine_candidates(
     _asr_candidates) + khung vi tri (spatial_boxes) thanh 1 tap (video_id, frame_idx). Cac
     khung vi tri gop VOI NHAU theo spatial_op ("and"/"or"), ROI ket qua do lai AND voi metadata/
     object/OCR/ASR toan cuc (giong tier1_filter.apply() nhung key la frame_idx)."""
-    video_allowed = by_metadata(authors, date_from, date_to, keywords_any)
+    video_allowed = by_metadata(authors, date_from, date_to, keywords_any, video_ids)
     object_allowed = _object_candidates(must_have_labels, min_count)
     text_allowed = _ocr_candidates(ocr_text, ocr_algorithm) if ocr_text else None
     audio_allowed = _asr_candidates(asr_text) if asr_text else None
@@ -1418,6 +1434,7 @@ def search_dense(
     date_from: str | None = None,
     date_to: str | None = None,
     keywords_any: list[str] | None = None,
+    video_ids: list[str] | None = None,
     must_have_labels: list[str] | None = None,
     min_count: dict[str, int] | None = None,
     asr_text: str | None = None,
@@ -1432,8 +1449,11 @@ def search_dense(
 ) -> pd.DataFrame:
     """mode in DENSE_MODES ("siglip"/"pe_core"/"beit3"/"rrf"). ocr_text: hard-filter chu tren
     man hinh (giong tier1_filter.by_text) - None = khong loc, "" cung coi nhu None.
-    authors/date_from/date_to/keywords_any: loc video (tier1_filter.by_metadata, dung chung
-    voi bo BTC vi la du lieu video-level). must_have_labels/min_count: loc theo Object toan cuc
+    authors/date_from/date_to/keywords_any/video_ids: loc video (tier1_filter.by_metadata, dung
+    chung voi bo BTC vi la du lieu video-level). video_ids (2026-08-20, theo yeu cau nguoi
+    dung: "thêm bộ lọc search theo video để lọc ra video được chỉ định") - danh sach video_id
+    CU THE duoc phep (vd ["L21_V001", "L21_V002"]) - khop CHINH XAC, khong phan biet hoa/
+    thuong, AND voi cac bo loc khac neu dung chung. must_have_labels/min_count: loc theo Object toan cuc
     (khong xet vi tri - OWLv2 closed-set, xem _object_candidates). spatial_boxes: khung OCR/
     Object CO vi tri tu canvas (xem _spatial_box_candidates + app.py). spatial_op: "and" (frame
     phai khop DU moi khung) hoac "or" (khop BAT KY khung nao). audio_mentions: [{"term": str}]
@@ -1477,7 +1497,7 @@ def search_dense(
     with (log.timed("Lọc thô (metadata/object/OCR/ASR/khung vẽ)") if log else contextlib.nullcontext(lambda *_a, **_k: None)) as set_detail:
         candidates = _combine_candidates(
             authors=authors, date_from=date_from, date_to=date_to, keywords_any=keywords_any,
-            must_have_labels=must_have_labels, min_count=min_count, ocr_text=ocr_text,
+            video_ids=video_ids, must_have_labels=must_have_labels, min_count=min_count, ocr_text=ocr_text,
             asr_text=asr_text, spatial_boxes=spatial_boxes, spatial_op=spatial_op, ocr_algorithm=ocr_algorithm,
         )
         if log:

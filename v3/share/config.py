@@ -26,7 +26,16 @@ load_dotenv(_V3_ROOT / ".env")
 # (app.py::read_video_bytes) VA de trich audio cho ASR (offline/build_asr_index.py).
 DATA_ROOT = Path(r"D:\Programming\AIHCM\data\Competition")
 
-INDEX_DIR = _V3_ROOT / "index"
+# 2026-08-20/21 (theo yeu cau nguoi dung, 3 lan doi cho lien tiep: "...sang thư mục
+# d:\...\data\Runtime" -> "...ra cùng cấp với thư mục Runtime" (data/index) -> nguoi dung tu tay
+# gop lai vao data/Runtime, LAN NAY PHANG (khong con thu muc con dense/) - chuyen index/ ra
+# ngoai repo v3/ nen phai hardcode duong dan rieng, khac cach tinh cu _V3_ROOT / "index". CANH
+# BAO that da xay ra o buoc gop phang nay: ocr_text.parquet/objects_index.parquet/
+# asr_text.parquet TRUNG TEN giua ban goc BTC (INDEX_DIR, local_idx-based) va ban dense
+# (DENSE_DIR, frame_idx-based) - ban dense DA GHI DE ban BTC. Da khoi phuc ban BTC tu backup
+# v3/index/ + doi ten 3 file dense thanh dense_ocr_text.parquet/dense_objects_index.parquet/
+# dense_asr_text.parquet (xem dense_search.py) de ca 2 cung ton tai trong 1 thu muc phang.
+INDEX_DIR = Path(r"D:\Programming\AIHCM\data\Runtime")
 
 # resources.py doc de xay row_pos (tier1_filter.py dung cho hard-filter khi KHONG co object/OCR
 # filter nao) - KHONG nham voi DENSE_META_PATH (pipeline dense) ben duoi.
@@ -42,7 +51,13 @@ OBJECTS_INDEX_PATH = INDEX_DIR / "objects_index.parquet"
 # 2026-08-19 (theo yeu cau nguoi dung: "d:\...\index\dense\dense_meta.parquet ... mình thấy
 # chưa có trong config") - goc thu muc + meta cua pipeline DENSE (SigLIP2/PE-Core/BEiT-3, tu
 # trich) - dense_search.py (Tang 2/3 CHINH, app.py dang chay live) doc truc tiep tu day.
-DENSE_DIR = INDEX_DIR / "dense"
+# 2026-08-21: truoc la thu muc CON rieng (INDEX_DIR / "dense"), nguoi dung da gop phang
+# data/Runtime nen gio TRUNG INDEX_DIR - giu bien DENSE_DIR rieng (thay vi doi het noi goi trong
+# dense_search.py/trake_corrections.py/vlm_corrections.py thanh INDEX_DIR) de code o do van ro
+# nghia "day la file cua pipeline dense" (xem ten file rieng dense_ocr_text.parquet/
+# dense_objects_index.parquet/dense_asr_text.parquet phan biet voi ban BTC goc, tranh trung ten
+# ghi de nhu bug that da xay ra khi gop phang).
+DENSE_DIR = INDEX_DIR
 DENSE_META_PATH = DENSE_DIR / "dense_meta.parquet"
 
 # Cache model HuggingFace/sentence-transformers ngay trong workspace này, không dùng

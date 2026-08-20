@@ -51,6 +51,7 @@ def _run_anchor_pool(
     min_count: dict[str, int] | None,
     ocr_text: str | None,
     asr_text: str | None,
+    video_ids: list[str] | None,
     spatial_boxes: list[dict] | None,
     spatial_op: str,
     ocr_algorithm: str,
@@ -62,7 +63,7 @@ def _run_anchor_pool(
     ranked = search_dense(
         anchor_text, dense_model, top_k=coarse_k,
         must_have_labels=must_have_labels, min_count=min_count, ocr_text=ocr_text,
-        asr_text=asr_text, spatial_boxes=spatial_boxes, spatial_op=spatial_op, ocr_algorithm=ocr_algorithm,
+        asr_text=asr_text, video_ids=video_ids, spatial_boxes=spatial_boxes, spatial_op=spatial_op, ocr_algorithm=ocr_algorithm,
         score_algorithm=score_algorithm, distill_model=distill_model, log=log,
     )
     return {
@@ -247,6 +248,7 @@ def search(
     min_count: dict[str, int] | None = None,
     ocr_text: str | None = None,
     asr_text: str | None = None,
+    video_ids: list[str] | None = None,
     spatial_boxes: list[dict] | None = None,
     spatial_op: str = "and",
     ocr_algorithm: str = "flexible",
@@ -261,11 +263,14 @@ def search(
     # (co the them sau, khong phai trong tam lan sua nay).
 ) -> pd.DataFrame:
     """Diem vao chinh Tang 3 tren BO DENSE - thay the hoan toan tier3_temporal.search() (BTC)
-    khi dung bo dense. must_have_labels/min_count/ocr_text/asr_text/spatial_boxes: filter CHUNG
-    cho MOI anchor (khung ve tay tu canvas AP DUNG DONG LOAT cho tat ca moc, xem docstring dau
-    file) - anchor.must_have_labels/min_count/ocr_text/asr_text (dict) la filter RIENG cho DUNG
-    moc do, AND them vao filter chung. asr_text (2026-08-20): xem docstring day du o
-    dense_search.py::search_dense - loc theo loi noi (ASR), khac audio_mentions (soft, tu LLM).
+    khi dung bo dense. must_have_labels/min_count/ocr_text/asr_text/video_ids/spatial_boxes:
+    filter CHUNG cho MOI anchor (khung ve tay tu canvas AP DUNG DONG LOAT cho tat ca moc, xem
+    docstring dau file) - anchor.must_have_labels/min_count/ocr_text/asr_text (dict) la filter
+    RIENG cho DUNG moc do, AND them vao filter chung. asr_text (2026-08-20): xem docstring day
+    du o dense_search.py::search_dense - loc theo loi noi (ASR), khac audio_mentions (soft, tu
+    LLM). video_ids (2026-08-20, theo yeu cau nguoi dung "thêm bộ lọc search theo video") - ap
+    dung CHUNG cho CA CHUOI (khong co per-anchor rieng, video_id la thuoc tinh cua ca video,
+    khong phai tung moc).
 
     Tra 1 dong/video, cot: video_id, score, anchor{i}_frame_id/pts_time/path."""
     if len(anchors) < 2:
@@ -293,7 +298,7 @@ def search(
                     pool = _run_anchor_pool(
                         a["text"], dense_model, k,
                         must_have_labels=anchor_must_have, min_count=anchor_min_count,
-                        ocr_text=anchor_ocr_text, asr_text=anchor_asr_text,
+                        ocr_text=anchor_ocr_text, asr_text=anchor_asr_text, video_ids=video_ids,
                         spatial_boxes=anchor_spatial_boxes, spatial_op=spatial_op,
                         ocr_algorithm=ocr_algorithm, score_algorithm=score_algorithm,
                         distill_model=distill_model, log=log,
@@ -303,7 +308,7 @@ def search(
                 pool = _run_anchor_pool(
                     a["text"], dense_model, k,
                     must_have_labels=anchor_must_have, min_count=anchor_min_count,
-                    ocr_text=anchor_ocr_text, asr_text=anchor_asr_text,
+                    ocr_text=anchor_ocr_text, asr_text=anchor_asr_text, video_ids=video_ids,
                     spatial_boxes=anchor_spatial_boxes, spatial_op=spatial_op,
                     distill_model=distill_model,
                     ocr_algorithm=ocr_algorithm, score_algorithm=score_algorithm, log=None,

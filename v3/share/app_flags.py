@@ -76,10 +76,44 @@ class ModalTimeoutError(RuntimeError):
 # cach nay KHONG huy duoc execution phia Modal khi het han (fn.remote() van chay tiep tren
 # server, chi client thoi cho) - chap nhan duoc vi muc tieu la UI KHONG treo, khong phai huy
 # tac vu.
-def call_modal_with_timeout(fn, /, *args, context: str, timeout: float = MODAL_TIMEOUT_SECONDS, **kwargs):
+# 2026-08-20 (theo yeu cau nguoi dung: "nếu không có cả modal thì có fallback về không sử
+# dụng được không" - test truc tiep xac nhan LO HONG THAT: khi Modal KHONG dang nhap/token sai
+# (vd modal.exception.AuthError) hoac app chua deploy o account dang dung, call_modal_with_
+# timeout() CHI bat _FutureTimeoutError - MOI loai loi KHAC (auth, khong tim thay app, mat
+# mang...) bay THANG len tren, toi tan app.py, hien traceback THO cho nguoi dung thay, khong
+# phai thong bao Tieng Viet ro rang nhu ModalTimeoutError. Them ModalUnavailableError + bat
+# RONG (Exception) cho MOI loi Modal khac ngoai timeout, kem GOI Y RO RANG: deploy Modal HOAC
+# bat bien AIC_LOCAL_* tuong ung de chay local thay the - dung CHUNG 1 diem sua cho CA 5 noi
+# goi Modal (3 model query encoder + dense_index + region_clip), khong can sua rieng tung cho.
+class ModalUnavailableError(RuntimeError):
+    """Modal tra loi LOI (KHAC voi treo qua han - xem ModalTimeoutError) - vd chua dang nhap/
+    token sai (AuthError), app chua duoc deploy, workspace het spend limit, mat mang... Nem ra
+    THONG BAO RO RANG kem huong dan 2 lua chon: sua phia Modal, HOAC bat bien moi truong local
+    tuong ung (neu co, xem local_env_hint) de chay HOAN TOAN khong can Modal."""
+
+    def __init__(self, context: str, original: Exception, local_env_hint: str | None = None) -> None:
+        hint = (
+            f" Hoặc đặt biến môi trường {local_env_hint}=1 trong .env để chạy HOÀN TOÀN KHÔNG "
+            f"CẦN Modal cho phần này (xem README.md mục 'Chạy model local')."
+            if local_env_hint else ""
+        )
+        super().__init__(
+            f"Không gọi được Modal ({context}) — {type(original).__name__}: {original}. "
+            f"Kiểm tra: đã `modal deploy` app tương ứng chưa, `modal token` còn hợp lệ không "
+            f"(`modal profile current`), workspace còn hạn mức chi tiêu không.{hint}"
+        )
+
+
+def call_modal_with_timeout(
+    fn, /, *args, context: str, timeout: float = MODAL_TIMEOUT_SECONDS,
+    local_env_hint: str | None = None, **kwargs,
+):
     """Goi 1 Modal Function/Method (`fn`, vd `enc.encode_siglip_text`) VOI TIMEOUT o phia CLIENT
     - dung fn.remote() (dong bo, nhanh) trong 1 thread rieng, .result(timeout=...) tren Future
-    de KHONG cho qua `timeout` giay. Nem ModalTimeoutError neu qua han."""
+    de KHONG cho qua `timeout` giay. Nem ModalTimeoutError neu qua han, ModalUnavailableError
+    neu Modal loi vi ly do KHAC (auth/chua deploy/het spend limit/mat mang...) - xem ghi chu o
+    tren. local_env_hint (optional): ten bien AIC_LOCAL_* tuong ung de goi y trong thong bao
+    loi (vd "AIC_LOCAL_QUERY_ENCODER_SIGLIP") - None neu khong co lua chon local (hiem)."""
     from concurrent.futures import ThreadPoolExecutor
     from concurrent.futures import TimeoutError as _FutureTimeoutError
 
@@ -89,3 +123,5 @@ def call_modal_with_timeout(fn, /, *args, context: str, timeout: float = MODAL_T
             return future.result(timeout=timeout)
         except _FutureTimeoutError as e:
             raise ModalTimeoutError(context) from e
+        except Exception as e:
+            raise ModalUnavailableError(context, e, local_env_hint) from e

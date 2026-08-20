@@ -368,14 +368,21 @@ def by_metadata(
     date_from: str | None = None,
     date_to: str | None = None,
     keywords_any: list[str] | None = None,
+    video_ids: list[str] | None = None,
 ) -> set[str] | None:
-    """Lọc theo video_metadata (kênh/ngày/từ khoá/tên chương trình) -> tập video_id được phép.
+    """Lọc theo video_metadata (kênh/ngày/từ khoá/tên chương trình/video_id) -> tập video_id
+    được phép.
 
     keywords_any so khớp CẢ title lẫn keywords_text (substring, không dấu) — gộp làm 1 ô
     "từ khoá" duy nhất ở UI thay vì tách riêng tìm-theo-tên-chương-trình, vì ở quy mô 873
     video thì không cần bộ máy full-text search riêng (BM25/inverted index) — substring quét
-    toàn bộ đã đủ nhanh (<10ms) và đây là lọc CỨNG (có/không), không phải xếp hạng liên quan."""
-    if not authors and not date_from and not date_to and not keywords_any:
+    toàn bộ đã đủ nhanh (<10ms) và đây là lọc CỨNG (có/không), không phải xếp hạng liên quan.
+
+    video_ids (2026-08-20, theo yêu cầu người dùng: "thêm bộ lọc search theo video để lọc ra
+    video được chỉ định") - CHỈ định thẳng danh sách video_id được phép (vd "L21_V001") - khớp
+    CHÍNH XÁC (không phân biệt hoa/thường, tự strip khoảng trắng), AND với các bộ lọc khác nếu
+    dùng chung (vd vừa chọn kênh vừa chỉ định video_id — kết quả là giao của cả 2)."""
+    if not authors and not date_from and not date_to and not keywords_any and not video_ids:
         return None
 
     df = resources.get().video_meta
@@ -385,6 +392,9 @@ def by_metadata(
         df = df[df["publish_date"] >= pd.to_datetime(date_from)]
     if date_to:
         df = df[df["publish_date"] <= pd.to_datetime(date_to)]
+    if video_ids:
+        wanted = {v.strip().upper() for v in video_ids if v.strip()}
+        df = df[df["video_id"].str.upper().isin(wanted)]
     if keywords_any:
         # dem khoang trang 2 dau ca needle va haystack de containment check roi dung ranh gioi
         # TU, khong phai ky tu tho - bug that phat hien 2026-08-09: "tin" (tin tuc) lot vao

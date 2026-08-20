@@ -1,12 +1,25 @@
 """Encode TEXT (câu truy vấn) cho 3 model dense (SigLIP2/PE-Core/BEiT-3).
 
-2 CHẾ ĐỘ, chọn qua biến môi trường AIC_LOCAL_MODELS (mặc định TẮT — giữ nguyên hành vi hiện tại):
-  - AIC_LOCAL_MODELS không set / "0": gọi .remote() tới Modal app nhẹ luôn giữ ấm
+2 CHẾ ĐỘ MỖI MODEL, chọn RIÊNG qua 3 biến môi trường (mặc định TẮT — giữ nguyên hành vi cũ):
+  - AIC_LOCAL_QUERY_ENCODER_SIGLIP
+  - AIC_LOCAL_QUERY_ENCODER_PE_CORE
+  - AIC_LOCAL_QUERY_ENCODER_BEIT3
+  (0/1, không set = TẮT nếu AIC_LOCAL_MODELS cũng không set)
+  - "0" hoặc không set: gọi .remote() tới Modal app nhẹ luôn giữ ấm
     (aic2026-query-encoders, min_containers=1, xem offline/modal_infra/query_encoders_app.py).
-  - AIC_LOCAL_MODELS=1: load CẢ 3 MODEL TRỰC TIẾP trên máy (README.md — "Chạy model local thay
-    vì Modal"). Nặng hơn (RAM/VRAM + tải model lần đầu) nhưng không cần tài khoản Modal/mạng ổn
-    định cho từng query — dùng đúng LẠI code load()/encode_*_text() của query_encoders_app.py,
-    chỉ bỏ phần bọc @app.cls/@modal.method (chạy in-process, không qua Modal container).
+  - "1": load ĐÚNG model đó TRỰC TIẾP trên máy (README.md — "Chạy model local thay vì Modal").
+    Nặng hơn (RAM/VRAM + tải model lần đầu) nhưng không cần tài khoản Modal/mạng ổn định cho
+    từng query — dùng đúng LẠI code load()/encode_*_text() của query_encoders_app.py, chỉ bỏ
+    phần bọc @app.cls/@modal.method (chạy in-process, không qua Modal container).
+
+2026-08-20 (theo yêu cầu người dùng: "với chế độ local cho toàn bộ, thêm env variable để chọn
+có load region clip embedding, dense_index, hay query encoder nhé... với query encoder thì
+thêm option để chọn load cho từng model") — TRƯỚC ĐÂY chỉ có 1 công tắc DUY NHẤT AIC_LOCAL_MODELS
+bật/tắt CẢ 3 model cùng lúc (không chọn được, vd chỉ muốn SigLIP2 local còn PE-Core/BEiT-3 vẫn
+qua Modal). Giờ MỖI model có công tắc RIÊNG, cho phép MIX (vd SigLIP2 local, 2 model kia remote)
+— chỉ nạp ĐÚNG model được bật local vào RAM, không còn ép nạp cả 3 dù chỉ cần 1. AIC_LOCAL_MODELS
+(biến CŨ) VẪN GIỮ làm giá trị MẶC ĐỊNH CHUNG khi biến riêng không đặt — tương thích ngược, không
+phá cấu hình cũ của ai đang dùng "AIC_LOCAL_MODELS=1" bật tất cả.
 
 Giữ NGUYÊN interface cũ (ENCODERS dict, trả về np.ndarray shape (1, dim)) — dense_search.py
 KHÔNG cần sửa gì (vẫn gọi ENCODERS[model](query) y hệt trước, bất kể chế độ nào)."""
@@ -29,7 +42,13 @@ BEIT3_SPM_URL = "https://github.com/addf400/files/releases/download/beit3/beit3.
 BEIT3_MAX_TEXT_LEN = 64
 
 
-def _local_mode() -> bool:
+def _local_mode_for(component: str) -> bool:
+    """component: "siglip"|"pe_core"|"beit3". Env RIÊNG AIC_LOCAL_QUERY_ENCODER_<TÊN> (0/1) ưu
+    tiên tuyệt đối - nếu KHÔNG đặt, fallback về AIC_LOCAL_MODELS (công tắc chung "bật/tắt tất
+    cả", giữ tương thích ngược với cấu hình cũ)."""
+    specific = os.environ.get(f"AIC_LOCAL_QUERY_ENCODER_{component.upper()}")
+    if specific is not None:
+        return specific.strip().lower() in ("1", "true", "yes")
     return os.environ.get("AIC_LOCAL_MODELS", "0").strip().lower() in ("1", "true", "yes")
 
 
@@ -42,29 +61,47 @@ def _remote_encoder():
     return Encoder()
 
 
-# ============================================================ Local (AIC_LOCAL_MODELS=1)
+# ============================================================ Local (AIC_LOCAL_QUERY_ENCODER_*=1)
 class _LocalQueryEncoder:
     """Y HET query_encoders_app.py::QueryEncoder.load()/encode_*_text(), chi bo wrapper Modal.
     Xem README.md muc "Xung dot thu vien" cho ly do timm==0.4.12 + shim timm.layers, torch._six,
-    perception_models/unilm phai clone tay (khong co tren PyPI)."""
+    perception_models/unilm phai clone tay (khong co tren PyPI).
+
+    2026-08-20: MOI model nap CO DIEU KIEN (chi khi _local_mode_for(<model>) True luc singleton
+    nay duoc tao - xem _local_encoder() duoi day) - model KHONG duoc bat local thi thuoc tinh
+    tuong ung = None, KHONG ton RAM/thoi gian tai (vd chi bat SigLIP2 local thi PE-Core/BEiT-3
+    hoan toan khong dung git-clone/tai checkpoint gi ca)."""
 
     def __init__(self) -> None:
-        import sys
-        import types
-
-        import requests
-        import torch
-
         from config import _V3_ROOT
 
         os.environ.setdefault("HF_HOME", str(_V3_ROOT / ".cache" / "huggingface"))
         cache_root = _V3_ROOT / ".cache"
 
+        self._siglip_model = None
+        self._siglip_processor = None
+        if _local_mode_for("siglip"):
+            self._load_siglip()
+
+        self._pe_model = None
+        self._pe_tokenizer = None
+        if _local_mode_for("pe_core"):
+            self._load_pe_core(cache_root)
+
+        self._beit3_model = None
+        self._beit3_sp = None
+        if _local_mode_for("beit3"):
+            self._load_beit3(cache_root)
+
+    def _load_siglip(self) -> None:
         # ---- SigLIP2 ----
         from transformers import AutoModel, AutoProcessor
 
         self._siglip_model = AutoModel.from_pretrained(SIGLIP_MODEL_NAME).eval()
         self._siglip_processor = AutoProcessor.from_pretrained(SIGLIP_MODEL_NAME)
+
+    def _load_pe_core(self, cache_root) -> None:
+        import sys
 
         # ---- PE-Core ----
         # BUG THAT (xem query_encoders_app.py): timm==0.4.12 (BAT BUOC cho BEiT-3/torchscale==
@@ -89,6 +126,13 @@ class _LocalQueryEncoder:
 
         self._pe_model = pe.CLIP.from_config(PE_CORE_MODEL_NAME, pretrained=True).eval()
         self._pe_tokenizer = pe_transforms.get_text_tokenizer(self._pe_model.context_length)
+
+    def _load_beit3(self, cache_root) -> None:
+        import sys
+        import types
+
+        import requests
+        import torch
 
         # ---- BEiT-3 ----
         beit3_cache_dir = cache_root / "beit3"
@@ -138,6 +182,9 @@ class _LocalQueryEncoder:
     def encode_siglip_text(self, text: str) -> list[float]:
         import torch
 
+        assert self._siglip_model is not None, (
+            "SigLIP2 chưa được nạp local - đặt AIC_LOCAL_QUERY_ENCODER_SIGLIP=1 trước khi gọi."
+        )
         inputs = self._siglip_processor(text=[text], return_tensors="pt", padding="max_length", truncation=True)
         with torch.no_grad():
             feats = self._siglip_model.get_text_features(**inputs)
@@ -149,6 +196,9 @@ class _LocalQueryEncoder:
     def encode_pe_core_text(self, text: str) -> list[float]:
         import torch
 
+        assert self._pe_model is not None, (
+            "PE-Core chưa được nạp local - đặt AIC_LOCAL_QUERY_ENCODER_PE_CORE=1 trước khi gọi."
+        )
         tokens = self._pe_tokenizer([text])
         with torch.no_grad():
             feats = self._pe_model.encode_text(tokens)
@@ -158,6 +208,9 @@ class _LocalQueryEncoder:
     def encode_beit3_text(self, text: str) -> list[float]:
         import torch
 
+        assert self._beit3_model is not None, (
+            "BEiT-3 chưa được nạp local - đặt AIC_LOCAL_QUERY_ENCODER_BEIT3=1 trước khi gọi."
+        )
         raw_ids = self._beit3_sp.EncodeAsIds(text)
         ids = [(rid + self._beit3_offset) if rid != 0 else self._beit3_unk for rid in raw_ids]
         if len(ids) > BEIT3_MAX_TEXT_LEN - 2:
@@ -176,7 +229,11 @@ class _LocalQueryEncoder:
 
 @lru_cache(maxsize=1)
 def _local_encoder() -> _LocalQueryEncoder:
-    return _LocalQueryEncoder()  # nap 3 model, chi 1 LAN (module-level cache) - cham lan dau
+    # singleton DUY NHAT (khong phai 3 cai rieng) - 3 model CO THE dung chung 1 instance vi moi
+    # model chi nap khi flag rieng cua no BAT (xem __init__) - goi lai ham nay (cache) SAU KHI
+    # bat them 1 flag moi trong CUNG session se KHONG nap bo sung (lru_cache giu instance CU) -
+    # can restart process neu doi flag giua chung, giong het gioi han cu cua AIC_LOCAL_MODELS.
+    return _LocalQueryEncoder()
 
 
 # 2026-08-20 (theo yeu cau nguoi dung: "hơn 1 phút nhưng chưa hết exception nào được raise" -
@@ -185,20 +242,23 @@ def _local_encoder() -> _LocalQueryEncoder:
 # call_modal_with_timeout() (spawn+get(timeout=...), xem app_flags.py) thay vi .remote() truc
 # tiep, nem ModalTimeoutError ro rang thay vi treo.
 def encode_text_siglip(text: str) -> np.ndarray:
-    vec = (_local_encoder().encode_siglip_text(text) if _local_mode() else
-           call_modal_with_timeout(_remote_encoder().encode_siglip_text, text, context="encode SigLIP2"))
+    vec = (_local_encoder().encode_siglip_text(text) if _local_mode_for("siglip") else
+           call_modal_with_timeout(_remote_encoder().encode_siglip_text, text, context="encode SigLIP2",
+                                    local_env_hint="AIC_LOCAL_QUERY_ENCODER_SIGLIP"))
     return np.asarray([vec], dtype=np.float32)
 
 
 def encode_text_pe_core(text: str) -> np.ndarray:
-    vec = (_local_encoder().encode_pe_core_text(text) if _local_mode() else
-           call_modal_with_timeout(_remote_encoder().encode_pe_core_text, text, context="encode PE-Core"))
+    vec = (_local_encoder().encode_pe_core_text(text) if _local_mode_for("pe_core") else
+           call_modal_with_timeout(_remote_encoder().encode_pe_core_text, text, context="encode PE-Core",
+                                    local_env_hint="AIC_LOCAL_QUERY_ENCODER_PE_CORE"))
     return np.asarray([vec], dtype=np.float32)
 
 
 def encode_text_beit3(text: str) -> np.ndarray:
-    vec = (_local_encoder().encode_beit3_text(text) if _local_mode() else
-           call_modal_with_timeout(_remote_encoder().encode_beit3_text, text, context="encode BEiT-3"))
+    vec = (_local_encoder().encode_beit3_text(text) if _local_mode_for("beit3") else
+           call_modal_with_timeout(_remote_encoder().encode_beit3_text, text, context="encode BEiT-3",
+                                    local_env_hint="AIC_LOCAL_QUERY_ENCODER_BEIT3"))
     return np.asarray([vec], dtype=np.float32)
 
 
