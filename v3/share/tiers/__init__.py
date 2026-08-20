@@ -1,10 +1,15 @@
-"""4 tầng pipeline search, chạy tuần tự trong search.py::search():
+"""Các tầng search (share/tiers/):
 
-  Tầng 1 (tier1_filter) — lọc thô: định nghĩa tập ứng viên (video_id, local_idx) TRƯỚC.
-  Tầng 2 (tier2_vector)  — CLIP: xếp hạng theo ngữ nghĩa TRONG tập ứng viên. ĐANG DÙNG.
-  Tầng 3 (tier3_temporal) — thứ tự sự kiện trong video (anchor-chain). CHƯA TRIỂN KHAI.
-  Tầng 4 (tier4_graph)   — xác minh quan hệ object-object (Relation Registry). CHƯA TRIỂN KHAI.
+  tier1_filter — lọc thô: định nghĩa tập ứng viên (video_id, local_idx) TRƯỚC (object/OCR/
+    metadata). ĐANG DÙNG — cả pipeline dense mới lẫn hard-filter đều gọi qua đây.
+  dense_search — Tầng 2 (vector): SigLIP2/PE-Core/BEiT-3 + RRF fusion trên bộ dense tự trích.
+    ĐANG DÙNG — pipeline chính app.py chạy live.
+  dense_temporal — Tầng 3 (TRAKE/temporal, anchor-chain qua DP) trên bộ dense. ĐANG DÙNG.
+  tier4_graph — xác minh quan hệ object-object (Relation Registry). CHƯA TRIỂN KHAI.
+  pair_gate — hỗ trợ tier4_graph.
 
-Mỗi tầng là 1 module riêng, hàm `apply()` (hoặc `rank()` ở tầng 2) là điểm vào chuẩn —
-thêm/bớt/đổi 1 tầng không ảnh hưởng tầng khác, miễn giữ đúng kiểu input/output.
+# 2026-08-20 (theo yeu cau nguoi dung: "dọn dẹp triệt để... code cũ") - da XOA HAN
+# tier2_vector.py/tier3_temporal.py (pipeline CLIP-ViT-B-32 + keyframe BTC goc, khong con duoc
+# app.py goi tu 2026-08-15/18, chi con lam baseline benchmark - da xac nhan dense pipeline
+# thang ro nen bo baseline luon). Xem git history neu can xem lai pipeline cu.
 """

@@ -16,7 +16,7 @@ import time
 import modal
 import numpy as np
 
-from eval_100way_clip_baseline import compute_ranks, print_report
+from eval_100way_utils import compute_ranks, print_report
 
 DATA_PATH = _Path(__file__).resolve().parent / "retrieval_100way_data.pkl"
 EMB_OUT_PATH = _Path(__file__).resolve().parent / "embeddings_pe_core.pkl"

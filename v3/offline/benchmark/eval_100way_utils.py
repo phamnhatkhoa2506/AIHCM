@@ -1,35 +1,11 @@
-"""Baseline: CLIP hien tai tren bai toan retrieval - LUU embedding ra file de dung chung cho
-SigLIP/PE-Core/VL-JEPA (khong encode lai), va bao ca 2 kieu do:
-  (a) pool RIENG 10 frame/query (cung video, gan thoi gian) - test phan biet chi tiet nho.
-  (b) pool CHUNG toan bo 1000 anh (het 100 query x 10 frame) - test quy mo LON hon nhieu,
-      gan voi that hon (vd kis_001 that: canh tranh 37209 frame, khong phai 10).
-
-SUA 2026-08-11 (lan 3): (a) rieng le van cho Recall@1=1.000 CA 2 lan thu (ngau nhien va gan
-thoi gian) - ket luan: 10 candidate la qua it de thay ro "score clustering" (van de that la
-CANH TRANH RONG qua NHIEU video/frame khac nhau, khong phai do gan/xa trong 1 video). Them (b)
-de co phep do that su kho, TAN DUNG LAI embedding da encode (khong ton them chi phi Modal).
-
-Chay: python offline/benchmark/eval_100way_clip_baseline.py
+"""Hàm đo Recall@k dùng CHUNG cho các script eval_100way_*.py (siglip/pe_core/...) — tách riêng
+khỏi eval_100way_clip_baseline.py (đã XOÁ 2026-08-20, dọn dẹp pipeline CLIP-32 cũ - xem
+share/config.py) vì đây là 2 hàm THUẦN TOÁN HỌC, không phụ thuộc gì vào model/pipeline cụ thể
+nào — vẫn cần cho các script đo model MỚI (SigLIP2/PE-Core...), không phải "code cũ".
 """
 from __future__ import annotations
 
-import sys as _sys
-from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "share"))
-
-import io
-import pickle
-import time
-
 import numpy as np
-from PIL import Image
-from sentence_transformers import SentenceTransformer
-
-from config import CLIP_IMAGE_MODEL_NAME, MODEL_CACHE_DIR
-from tiers.tier2_vector import encode_query
-
-DATA_PATH = _Path(__file__).resolve().parent / "retrieval_100way_data.pkl"
-EMB_OUT_PATH = _Path(__file__).resolve().parent / "embeddings_clip.pkl"
 
 
 def compute_ranks(text_vecs: np.ndarray, img_vecs: np.ndarray, pool_size: int, n_queries: int) -> dict:
@@ -89,31 +65,3 @@ def print_report(name: str, r: dict, elapsed_s: float) -> None:
           f"R@10={r['full_pool']['Recall@10']:.3f}  R@50={r['full_pool']['Recall@50']:.3f}  "
           f"median_rank={r['full_pool']['median_rank']:.1f}/{r['full_pool']['pool_size']}")
     print(f"Thoi gian encode: {elapsed_s:.1f}s")
-
-
-def main() -> None:
-    with open(DATA_PATH, "rb") as f:
-        data = pickle.load(f)
-    query_texts, pools_bytes = data["query_texts"], data["pools_bytes"]
-    pool_size = len(pools_bytes[0])
-    n_queries = len(query_texts)
-
-    t0 = time.perf_counter()
-    img_model = SentenceTransformer(CLIP_IMAGE_MODEL_NAME, cache_folder=str(MODEL_CACHE_DIR))
-    all_images = [Image.open(io.BytesIO(b)).convert("RGB") for pool in pools_bytes for b in pool]
-    img_vecs = img_model.encode(all_images, convert_to_numpy=True, normalize_embeddings=True, batch_size=32)
-    t1 = time.perf_counter()
-
-    text_vecs = np.stack([encode_query(t) for t in query_texts])
-    t2 = time.perf_counter()
-
-    with open(EMB_OUT_PATH, "wb") as f:
-        pickle.dump({"img_vecs": img_vecs, "text_vecs": text_vecs, "pool_size": pool_size}, f)
-    print(f"da luu embedding -> {EMB_OUT_PATH}")
-
-    r = compute_ranks(text_vecs, img_vecs, pool_size, n_queries)
-    print_report("CLIP hien tai (clip-ViT-B-32 + multilingual text)", r, t1 - t0 + t2 - t1)
-
-
-if __name__ == "__main__":
-    main()

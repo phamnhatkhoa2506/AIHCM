@@ -8,20 +8,19 @@
 KHÔNG dùng CLIP text-text similarity làm auto-filter: đã kiểm chứng (2026-08-05) similarity
 quá sát nhau giữa mọi cặp cụm từ ngắn (0.94-0.99), "cún con" xếp hạng gần nhất toàn nhãn sai
 (Linh dương, Cú, Cây...) — silent-wrong-nhưng-trông-tự-tin, đúng loại lỗi cần tránh (gap
-honesty). Nên suggest() dưới đây CHỈ để hiển thị gợi ý cho người dùng bấm chọn, KHÔNG được
-tự động áp vào filter.
+honesty). Từng có suggest() dùng CLIP text-text similarity gợi ý khi resolve() không khớp -
+ĐÃ XOÁ (2026-08-20, theo yêu cầu người dùng, xác nhận 0 caller thật) vì đúng lý do nói trên:
+similarity quá sát nhau nên gợi ý không đáng tin, và không có UI nào thật sự hiển thị nó.
 """
 from __future__ import annotations
 
 import json
-import os
 import unicodedata
 
-from config import CLIP_TEXT_MODEL_NAME, INDEX_DIR, MODEL_CACHE_DIR
+from config import INDEX_DIR
 
 LABEL_VI_PATH = INDEX_DIR / "label_vi.json"
 LABEL_SYNONYMS_PATH = INDEX_DIR / "label_synonyms.json"
-LABEL_EMB_PATH = INDEX_DIR / "label_vi_embeddings.npy"
 # Ban dich cho nhan open-vocab (Grounding DINO, xem translate_open_vocab.py 2026-08-06) - top
 # 300 nhan theo tan suat trong open_vocab_detections.parquet, dich qua NIM LLM.
 OPEN_VOCAB_VI_PATH = INDEX_DIR / "open_vocab_vi.json"
@@ -285,56 +284,11 @@ def resolve(term_vi: str) -> list[str]:
     return []
 
 
-# ============================================================ Gợi ý mờ (KHÔNG auto-apply)
-_model = None
-_labels_ordered: list[str] | None = None
-_label_embeddings = None
-
-
-def _load_embeddings() -> None:
-    global _model, _labels_ordered, _label_embeddings
-    if _label_embeddings is not None:
-        return
-    import numpy as np
-
-    _load()
-    assert _label_vi is not None
-    _labels_ordered = list(_label_vi.keys())
-
-    if LABEL_EMB_PATH.exists():
-        _label_embeddings = np.load(LABEL_EMB_PATH)
-        return
-
-    os.environ.setdefault("HF_HOME", str(MODEL_CACHE_DIR))
-    from sentence_transformers import SentenceTransformer
-
-    _model = SentenceTransformer(CLIP_TEXT_MODEL_NAME, cache_folder=str(MODEL_CACHE_DIR))
-    vi_texts = [_label_vi[lb] for lb in _labels_ordered]
-    _label_embeddings = _model.encode(vi_texts, normalize_embeddings=True, show_progress_bar=False)
-    np.save(LABEL_EMB_PATH, _label_embeddings)
-
-
-def suggest(term_vi: str, top_k: int = 5):
-    """Gợi ý mờ theo similarity CLIP text (KHÔNG dùng để filter tự động — chỉ hiển thị cho
-    người dùng chọn tay). Trả list[(label_en, label_vi, score)]."""
-    global _model
-    import numpy as np
-
-    _load_embeddings()
-    assert _labels_ordered is not None and _label_embeddings is not None and _label_vi is not None
-
-    if _model is None:
-        os.environ.setdefault("HF_HOME", str(MODEL_CACHE_DIR))
-        from sentence_transformers import SentenceTransformer
-
-        _model = SentenceTransformer(CLIP_TEXT_MODEL_NAME, cache_folder=str(MODEL_CACHE_DIR))
-
-    qe = _model.encode([term_vi], normalize_embeddings=True)[0]
-    sims = _label_embeddings @ qe
-    top_idx = np.argsort(-sims)[:top_k]
-    return [(_labels_ordered[i], _label_vi[_labels_ordered[i]], float(sims[i])) for i in top_idx]
-
-
+# 2026-08-20 (theo yeu cau nguoi dung: "CLIP_TEXT_MODEL_NAME ... mình không còn dùng cái này
+# nữa") - XOA suggest()/_load_embeddings() (goi y mo theo similarity CLIP text khi resolve()
+# khong khop chinh xac) - da xac nhan 0 caller thuc su trong toan repo (chi __main__ demo o duoi
+# tung goi, da sua). resolve() (ben tren) KHONG can - chi dung containment/synonym string match,
+# khong dinh gi model nao.
 if __name__ == "__main__":
     import sys
 
@@ -347,5 +301,3 @@ if __name__ == "__main__":
     for term in sys.argv[1:] or ["thùng rác", "cún con", "người", "không tồn tại xyz"]:
         r = resolve(term)
         print(f"resolve({term!r}) -> {r}")
-        if not r:
-            print(f"  suggest: {suggest(term, top_k=3)}")

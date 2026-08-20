@@ -19,7 +19,15 @@ DINO, 87,649 object) truoc day KHONG nam trong pham vi precompute nao ca - nhan 
 (vd "lion dance costume") luon roi vao nhanh cham. INCLUDE_OPEN_VOCAB=True bay gio LUON precompute
 HET open_vocab (khong loc theo category, vi day la tap nho, khong can gioi han nhu closed-set).
 detection_id cua open_vocab = N_CLOSED_TOTAL + vi_tri_dong_trong_file - dung KHOP voi cach
-resources.py gop objects_index (concat closed roi noi open_vocab vao sau, ignore_index=True)."""
+resources.py gop objects_index (concat closed roi noi open_vocab vao sau, ignore_index=True).
+
+2026-08-20 (theo cau hoi nguoi dung "Region-CLIP embedding khong phai dung SigLIP-2 a ban"):
+script nay dung CLIP-ViT-B-32 (qua region_clip_app.py), KHONG phai SigLIP2 - output
+(region_embeddings.npy) DA BI THAY THE cho Region-CLIP rerank LIVE (app.py gio dung
+region_embeddings_siglip.npy, sinh boi build_dense_region_embeddings_shard.py, model SigLIP2).
+Script nay CHI con gia tri lam CACHE TUY CHON (khong bat buoc) cho offline/audit_object_labels.py
+- audit van chay dung neu KHONG co region_embeddings.npy, chi cham hon (phai crop+encode fresh
+100% thay vi tra thang cache)."""
 
 
 from __future__ import annotations

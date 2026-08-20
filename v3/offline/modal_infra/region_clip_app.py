@@ -7,6 +7,12 @@ không cần HTTP server, gọi trực tiếp qua Modal RPC (`modal.Cls.from_nam
 build_region_embeddings.py). Crop ảnh vẫn làm ở LOCAL (chỉ máy local có file zip keyframe) —
 chỉ gửi bytes ảnh đã crop lên Modal để encode, không gửi cả frame gốc.
 
+Lưu ý (2026-08-20, theo câu hỏi người dùng "Region-CLIP embedding không phải dùng SigLIP-2 à
+bạn"): app này dùng CLIP-ViT-B-32 (KHÔNG phải SigLIP2) — ĐÃ BỊ THAY THẾ cho tính năng Region-
+CLIP rerank LIVE trong app.py (giờ chạy hoàn toàn trên offline/modal_infra/region_rerank_app.py,
+dùng SigLIP2, xem docstring file đó + build_dense_region_embeddings_shard.py). App này CHỈ còn
+được offline/audit_object_labels.py gọi (audit chất lượng nhãn, không phải search live).
+
 Deploy: modal deploy region_clip_app.py
 """
 import modal

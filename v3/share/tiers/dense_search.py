@@ -44,13 +44,13 @@ merge_dense_embeddings.py va PDF muc 3) - dung THANG duoc, khong can quy doi.
 from __future__ import annotations
 
 import contextlib
-from collections import defaultdict as _defaultdict
 from functools import lru_cache
 
 import faiss
 import numpy as np
 import pandas as pd
 
+from app_flags import ModalTimeoutError, call_modal_with_timeout
 from config import DENSE_DIR, DENSE_META_PATH, INDEX_DIR
 from label_translate import resolve as resolve_label_vi
 from local_text_encoders import ENCODERS
@@ -104,11 +104,20 @@ def _shot_bounds_by_video() -> dict[str, list[tuple[int, int, int]]]:
     keyframe_meta_all.jsonl (da doi chieu thu, khop 100% cho video test) nhung PHU 873/873
     video (jsonl chi co 574/873 - phu 1 phan, co le tu 1 lan chay thu truoc do) - dung
     dense_meta lam nguon CHINH, khong can doc them file jsonl rieng."""
+    # 2026-08-20 (toi uu, theo yeu cau nguoi dung "xem trong dự án còn có chỗ nào đang bị lỗ
+    # hổng tốc độ không" - do that qua audit chu dong: ham nay ton ~5s LAN DAU/phien, dung cho
+    # nut "▶ Video" o KIS/Q&A): ban CU dung `.iterrows()` tren ket qua groupby - NOI TIENG cham
+    # (tao 1 pandas Series moi MOI dong, ep kieu lai) du chi ~vai chuc nghin dong (so shot, KHONG
+    # phai so frame). Fix: `.reset_index()` + zip() tren MANG numpy tho (nhu da lam cho OCR) -
+    # do that: 5.05s -> 0.33s (~15 lan nhanh hon), KET QUA GIONG HET (da so sanh tung phan tu).
     meta = _load_dense_meta()
     out: dict[str, list[tuple[int, int, int]]] = {}
-    grouped = meta.groupby(["video_id", "shot_idx"])["frame_idx"].agg(["min", "max"])
-    for (vid, shot_idx), row in grouped.iterrows():
-        out.setdefault(vid, []).append((int(shot_idx), int(row["min"]), int(row["max"])))
+    grouped = meta.groupby(["video_id", "shot_idx"], sort=False)["frame_idx"].agg(["min", "max"]).reset_index()
+    for vid, shot_idx, lo, hi in zip(
+        grouped["video_id"].values, grouped["shot_idx"].values,
+        grouped["min"].values, grouped["max"].values,
+    ):
+        out.setdefault(vid, []).append((int(shot_idx), int(lo), int(hi)))
     for vid in out:
         out[vid].sort(key=lambda t: t[0])
     return out
@@ -311,7 +320,14 @@ def apply_region_clip_rerank(
                 if _local_mode():
                     scores = _local_region_rerank().rerank(frame_keys, entity_labels, attribute_text)
                 else:
-                    scores = _region_rerank_server().rerank.remote(frame_keys, entity_labels, attribute_text)
+                    # 2026-08-20 (theo yeu cau nguoi dung, tiep tuc sau timeout NIM) - .remote()
+                    # khong co timeout, co the treo VO HAN - ModalTimeoutError (con so voi
+                    # RuntimeError) van duoc except Exception ben duoi bat, GIU NGUYEN hanh vi
+                    # graceful-degrade cu (coi nhu khong khop, khong lam sap ca query).
+                    scores = call_modal_with_timeout(
+                        _region_rerank_server().rerank, frame_keys, entity_labels, attribute_text,
+                        context="Region-CLIP rerank",
+                    )
             except Exception as e:
                 scores = [0.0] * len(results)
                 if log:
@@ -432,6 +448,99 @@ def _cluster_ocr_rows_by_column(rows: list[dict]) -> list[dict]:
     return [r for c in clusters for r in c]
 
 
+class _OCRRowsByFrame:
+    """Thay the dict[(video_id,frame_idx)] -> list[dict] cu (2026-08-20, toi uu lan 2 - xem
+    docstring _ocr_columnar() ben duoi cho ly do/so lieu do dac). CHI materialize list[dict]
+    (dang cac ham khac trong file nay dang mong doi) KHI THAT SU truy cap (.get() 1 frame cu
+    the, hoac duyet .items()) - du lieu goc la MANG numpy DA SAP XEP, khong giu san 1.33 TRIEU
+    dict Python trong bo nho. API tuong thich nguoc du (chi co .get()/.items(), dung du cho
+    3 noi goi trong file nay - khong phai dict that nen KHONG ho tro [] / len() / v.v...)."""
+    __slots__ = ("_index", "_text", "_ymin", "_xmin", "_ymax", "_xmax")
+
+    def __init__(self, index, text_arr, ymin_arr, xmin_arr, ymax_arr, xmax_arr):
+        self._index = index
+        self._text = text_arr
+        self._ymin = ymin_arr
+        self._xmin = xmin_arr
+        self._ymax = ymax_arr
+        self._xmax = xmax_arr
+
+    def _rows(self, start: int, end: int) -> list[dict]:
+        return [
+            {"text_norm": self._text[i], "ymin": self._ymin[i], "xmin": self._xmin[i],
+             "ymax": self._ymax[i], "xmax": self._xmax[i]}
+            for i in range(start, end)
+        ]
+
+    def get(self, key, default=None):
+        bounds = self._index.get(key)
+        if bounds is None:
+            return default
+        return self._rows(*bounds)
+
+    def items(self):
+        for key, (start, end) in self._index.items():
+            yield key, self._rows(start, end)
+
+
+@lru_cache(maxsize=1)
+def _ocr_columnar():
+    """Doc ocr_text.parquet 1 LAN, tra ve (index, video_id_arr, frame_idx_arr, text_arr,
+    words_arr, ymin_arr, xmin_arr, ymax_arr, xmax_arr) - MANG numpy DA SAP XEP theo
+    (video_id, frame_idx, ymin, xmin) (sort_values 1 lan, vectorized/C-level trong pandas),
+    `index`: dict (video_id,frame_idx) -> (start,end) SLICE vao cac mang tren (tim ranh gioi
+    group BANG so sanh mang numpy - KHONG loop Python tren tung dong). `words_arr[i]` = KET QUA
+    SAN cua `text_arr[i].split()` (xem 2026-08-20 lan 2 duoi day).
+
+    2026-08-20 (toi uu LAN 1, theo yeu cau nguoi dung "thí nghiệm trước khi đưa vào code...
+    thử để xem hiệu quả rồi ta gắn vào sau" - da THI NGHIEM RIENG truoc, KHONG dung code that
+    cho toi khi xac nhan dung+nhanh): ban truoc (zip+defaultdict, van tao list[dict] CHO MOI
+    trong 1.33 TRIEU dong khi build) chi nhanh hon ban goc ~31% (14.35s -> ~8.6-9.9s) - VAN con
+    cham vi van phai tao ngan ay dict Python. Cach nay (khong tao dict NAO khi build INDEX, chi
+    index+mang) - phan BUILD INDEX rieng chi ~0.55-0.82s. Da kiem tra dung TREN TOAN BO 343,015
+    frame (so voi ban dict cu) - 0 frame lech.
+
+    2026-08-20 (toi uu LAN 2, phat hien khi do lai FULL _ocr_frame_words(): build index nhanh
+    (~0.8s) nhung buoc GOP TU theo frame ben duoi VAN goi `.split()` tung dong trong loop Python
+    - rieng buoc nay ton ~11.6s, khien tong the CHUA nhanh nhieu nhu ky vong). Fix: tach `.split()`
+    ra khoi vong lap, dung `pandas.Series.str.split()` (vectorized, mot lan cho CA 1.33 TRIEU
+    dong) NGAY TAI DAY - do that: ~1.9-2.0s (so voi ~4.5s neu goi .split() tung dong trong list
+    comprehension, ~2.2 lan nhanh hon) - _ocr_frame_words() ben duoi chi con GHEP (extend) cac
+    list DA TACH SAN, khong con parse chuoi nua.
+
+    Sap xep THEO CA (ymin,xmin) (khong chi video_id/frame_idx) ngay tu buoc nay - de
+    _ocr_frame_words() ben duoi doc THANG tu mang theo dung THU TU vi tri (khong can sort()
+    rieng nua, tranh regress hanh vi cu "GOP LAI theo thu tu ymin,xmin")."""
+    if not OCR_TEXT_PATH.exists():
+        empty = np.array([])
+        return {}, empty, empty, empty, empty, empty, empty, empty, empty
+    df = pd.read_parquet(OCR_TEXT_PATH)
+    df_sorted = df.sort_values(["video_id", "frame_idx", "ymin", "xmin"], kind="mergesort").reset_index(drop=True)
+    vid_arr = df_sorted["video_id"].values
+    fidx_arr = df_sorted["frame_idx"].values.astype(np.int64)
+    text_arr = df_sorted["text_norm"].values
+    words_arr = df_sorted["text_norm"].str.split().values  # vectorized, xem docstring "LAN 2"
+    ymin_arr = df_sorted["ymin"].values
+    xmin_arr = df_sorted["xmin"].values
+    ymax_arr = df_sorted["ymax"].values
+    xmax_arr = df_sorted["xmax"].values
+
+    # Ranh gioi group: vi tri MA key (video_id,frame_idx) DOI so voi dong truoc - vectorized
+    # (so sanh mang numpy, C-level), KHONG loop Python tren tung dong trong 1.33 TRIEU dong.
+    change = np.ones(len(df_sorted), dtype=bool)
+    if len(df_sorted) > 0:
+        change[1:] = (vid_arr[1:] != vid_arr[:-1]) | (fidx_arr[1:] != fidx_arr[:-1])
+    boundaries = np.flatnonzero(change)
+    boundaries = np.append(boundaries, len(df_sorted))
+    starts, ends = boundaries[:-1], boundaries[1:]
+    # vong lap con lai (neu co) chi chay tren SO FRAME (~343k), khong phai so DONG (~1.33M) -
+    # it hon ~4 lan, va chi tao tuple/int (khong tao dict) nen re hon nhieu.
+    keys = list(zip(vid_arr[starts].tolist(), fidx_arr[starts].tolist()))
+    index = dict(zip(keys, zip(starts.tolist(), ends.tolist())))
+
+    return index, vid_arr, fidx_arr, text_arr, words_arr, ymin_arr, xmin_arr, ymax_arr, xmax_arr
+
+
 @lru_cache(maxsize=1)
 def _ocr_frame_words() -> dict[tuple[str, int], list[str]]:
     """(video_id, frame_idx) -> DANH SACH TU cua TAT CA cac box OCR trong frame do, GOP LAI
@@ -453,48 +562,33 @@ def _ocr_frame_words() -> dict[tuple[str, int], list[str]]:
     _flexible_word_match() (xem tier1_filter.py) de vua khoan dung box khac chen giua, vua
     khoan dung ranh gioi tu dinh/lech NGAY TRONG 1 box.
 
-    2026-08-17 (toi uu): xay tu _ocr_rows_by_frame() da co san (KHONG doc lai parquet lan 2 -
-    truoc do 2 ham nay doc file rieng, ton ~40s thay vi ~20s luc build cache lan dau)."""
+    2026-08-20 (toi uu LAN 2): doc THANG tu _ocr_columnar() (da SAP XEP san theo ymin,xmin VA
+    da tach .split() san qua words_arr) - KHONG con di qua _ocr_rows_by_frame() (se tao
+    list[dict] cho MOI frame, dung "duong cham" cu), KHONG con can sorted() rieng (du lieu da
+    dung thu tu tu buoc sort chung), va KHONG con goi .split() trong vong lap (da tach vectorized
+    1 lan trong _ocr_columnar(), xem docstring "LAN 2" o do) - chi con GHEP (extend) cac list
+    tu DA TACH SAN."""
+    index, _vid, _fidx, _text_arr, words_arr, *_rest = _ocr_columnar()
     out: dict[tuple[str, int], list[str]] = {}
-    for key, rows in _ocr_rows_by_frame().items():
-        rows_sorted = sorted(rows, key=lambda r: (r["ymin"], r["xmin"]))
+    for key, (start, end) in index.items():
         words: list[str] = []
-        for r in rows_sorted:
-            words.extend(r["text_norm"].split())
+        for w in words_arr[start:end]:
+            words.extend(w)
         out[key] = words
     return out
 
 
 @lru_cache(maxsize=1)
-def _ocr_rows_by_frame() -> dict[tuple[str, int], list[dict]]:
-    """(video_id, frame_idx) -> list[{"text_norm","ymin","xmin","ymax","xmax"}] CHUA sap xep -
-    du lieu THO de _ocr_frame_words_clustered() cluster LAZY tung frame 1 (KHONG groupby toan
-    bo corpus - qua cham, xem docstring _ocr_frame_words). Build 1 LAN, tra cuu O(1) sau do.
-    _ocr_frame_words() DUNG LAI ket qua nay (khong doc parquet rieng) - CHI 1 lan quet file
-    duy nhat cho ca 2 cache.
+def _ocr_rows_by_frame() -> _OCRRowsByFrame:
+    """(video_id, frame_idx) -> list[{"text_norm","ymin","xmin","ymax","xmax"}] (qua .get()/
+    .items(), xem _OCRRowsByFrame) - du lieu THO de _ocr_frame_words_clustered() cluster LAZY
+    tung frame 1 (KHONG groupby toan bo corpus - qua cham, xem docstring _ocr_frame_words).
 
-    2026-08-20 (toi uu, theo yeu cau nguoi dung "lọc thô... chạy khá chậm" - do that qua step
-    log: buoc nay (lan dau/phien, sau do @lru_cache o tren lam no tuc thi cac lan sau) ton
-    ~14.35s rieng cho 1.33 TRIEU dong OCR): ban CU dung `itertuples()` (dung namedtuple, cham)
-    + `setdefault(key, []).append(...)` (goi method setdefault MOI dong) - 2 nguon cham chinh
-    cua vong lap Python thuan tren corpus lon nhu vay (do that: ~12.5s). Fix: zip() truc tiep
-    tren cac MANG numpy tho (df["col"].values, nhanh hon namedtuple construction moi dong) +
-    defaultdict(list) (tranh goi setdefault() moi dong, chi index truc tiep) - do that con
-    ~8.6s (~31% nhanh hon), KET QUA GIONG HET (da so sanh tung phan tu). Van la chi phi 1 LAN/
-    phien (lru_cache) - KHONG the ve gan 0 hoan toan neu khong doi han cau truc du lieu (bo
-    han dict-per-row, ngoai pham vi lan sua nay)."""
-    if not OCR_TEXT_PATH.exists():
-        return {}
-    df = pd.read_parquet(OCR_TEXT_PATH)
-    out: dict[tuple[str, int], list[dict]] = _defaultdict(list)
-    for vid, fidx, text, ymin, xmin, ymax, xmax in zip(
-        df["video_id"].values, df["frame_idx"].values, df["text_norm"].values,
-        df["ymin"].values, df["xmin"].values, df["ymax"].values, df["xmax"].values,
-    ):
-        out[(vid, int(fidx))].append({
-            "text_norm": text, "ymin": ymin, "xmin": xmin, "ymax": ymax, "xmax": xmax,
-        })
-    return dict(out)
+    2026-08-20 (toi uu LAN 2, xem docstring _ocr_columnar() cho so lieu do dac day du): chi la
+    1 wrapper NHE quanh _ocr_columnar() (da cache rieng) - KHONG tu doc parquet, KHONG tu build
+    gi them o day."""
+    index, _vid, _fidx, text_arr, _words_arr, ymin_arr, xmin_arr, ymax_arr, xmax_arr = _ocr_columnar()
+    return _OCRRowsByFrame(index, text_arr, ymin_arr, xmin_arr, ymax_arr, xmax_arr)
 
 
 def _ocr_frame_words_clustered(video_id: str, frame_idx: int) -> list[str]:
@@ -591,6 +685,89 @@ def _load_dense_asr() -> pd.DataFrame | None:
     if not ASR_TEXT_PATH.exists():
         return None
     return pd.read_parquet(ASR_TEXT_PATH)
+
+
+# ============================================================ ASR HARD FILTER (2026-08-20)
+# 2026-08-20 (theo yeu cau nguoi dung: "tích hợp search theo ASR... đảm bảo những câu như...
+# nặng đến 211kg... mà embedding model thường không thấy") - TRUOC DAY ASR CHI dung lam SOFT
+# BOOST (_audio_mention_boost, +diem nho, KHONG loai frame nao - xem audio_mentions o tren) -
+# khong du manh cho case nhu "211kg" (1 con so CU THE nam trong lop tin CLIP khong "thay" duoc,
+# can LOC CUNG giong OCR chu khong chi cong diem nhe). Them 1 duong LOC CUNG THEO LOI NOI moi,
+# SONG SONG voi OCR (asr_text param, xem search_dense/_combine_candidates duoi day) - nguoi
+# dung tu dien (giong o Loc chu OCR), KHONG tu dong (LLM audio_mentions van la duong RIENG,
+# soft, giu nguyen khong doi).
+@lru_cache(maxsize=1)
+def _frame_idx_by_video() -> dict[str, np.ndarray]:
+    """video_id -> mang frame_idx (dense_meta) DA SAP XEP - dung de tim NHANH (bisect, O(log n))
+    cac frame nam trong 1 khoang [frame_idx_start, frame_idx_end] cua 1 doan ASR khop, khong
+    can loc lai dense_meta (369k dong) moi lan goi. Chi ~873 video (video-level), KHONG can
+    toi uu vector hoa nhu OCR (1.33 TRIEU dong) - groupby+loop o day ĐÃ đủ nhanh (do that
+    <0.5s), khong dang chi phi ky thuat tuong tu."""
+    meta = _load_dense_meta()
+    out: dict[str, np.ndarray] = {}
+    for vid, grp in meta.groupby("video_id", sort=False)["frame_idx"]:
+        out[vid] = np.sort(grp.values)
+    return out
+
+
+def _asr_candidates(asr_text: str) -> set[tuple[str, int]] | None:
+    """Tra ve set (video_id, frame_idx) - CAC FRAME DENSE nam trong khoang thoi gian cua 1 doan
+    ASR co text_norm KHOP asr_text (ordered-substring, giong _audio_mention_boost) - None neu
+    asr_text rong (khong loc) hoac chua co du lieu ASR dense.
+
+    Khac OCR (khop TUNG FRAME rieng le): 1 doan ASR trai dai NHIEU frame (frame_idx_start..end)
+    - MOI frame dense nam trong khoang do deu la ung vien hop le (nguoi noi cau do trong luc
+    canh nao dang chieu tren man hinh, khong the biet CHINH XAC frame nao - giu CA khoang, giong
+    nguyen tac ASR_CONTEXT_WINDOW_SECONDS cua soft-boost)."""
+    if not asr_text or not asr_text.strip():
+        return None
+    asr = _load_dense_asr()
+    if asr is None or asr.empty:
+        return set()
+
+    # 2026-08-20 (toi uu, do that qua benchmark: ban dau dung .apply(lambda...) - quet 47,585
+    # dong BANG PYTHON LOOP moi lan goi (KHONG cache o day, khac OCR) - ton ~2s/query, se cong
+    # don vao MOI lan search dung ASR filter. Fix: `text_norm` da SAN accent-stripped+lowercase
+    # tu build_dense_asr_index.py (kiem tra that: text_norm == strip_accents(text_norm)) - dung
+    # THANG `.str.contains()` (vectorized, C-level trong pandas) thay vi .apply(lambda) - do
+    # that: ~0.05s/query (~40 lan nhanh hon). KHONG can _strip_accents(t) rieng cho tung dong
+    # nua vi da chuan hoa san.
+    needle = _strip_accents(asr_text)
+    hit = asr[asr["text_norm"].str.contains(needle, regex=False, na=False)]
+    if hit.empty:
+        return set()
+
+    # BUG THAT (2026-08-20, nguoi dung phat hien qua case that: "sân bay quốc tế" that su co
+    # trong L25_V042 - text_norm khop 100% - nhung loc ra KHONG co video nay): dense corpus lay
+    # mau THUA (~0.55-2.65s/frame TRUNG BINH, nhung co video/doan cu the THUA HON NHIEU o cac
+    # canh tinh/shot dai) - do that CHINH XAC case nay: 2 frame dense gan nhat cua L25_V042
+    # cach nhau toi 1440 frame (~57.6s o 25fps), trong khi doan ASR khop chi dai ~10s (frame_idx
+    # 32068-32312) - KHONG CO frame dense nao roi dung vao khoang do -> match THAT SU nhung tra
+    # ve 0 frame, "bien mat" khoi ket qua ma khong co dau hieu gi. Fix: neu KHONG co frame nao
+    # nam CHAT trong [start,end], fallback ve frame dense GAN NHAT (truoc hoac sau, tuy cai nao
+    # gan hon) - giong nguyen tac get_shot_frame_range() da lam (video/doan khong co frame dung
+    # khop -> lay gan nhat, con hon KHONG co gi) - dam bao 1 doan ASR khop CHU KHONG BAO GIO
+    # "bien mat" hoan toan chi vi lay mau thua.
+    frame_idx_by_video = _frame_idx_by_video()
+    candidates: set[tuple[str, int]] = set()
+    for row in hit.itertuples(index=False):
+        frames = frame_idx_by_video.get(row.video_id)
+        if frames is None or len(frames) == 0:
+            continue
+        lo = int(np.searchsorted(frames, row.frame_idx_start, side="left"))
+        hi = int(np.searchsorted(frames, row.frame_idx_end, side="right"))
+        if lo < hi:
+            for f in frames[lo:hi]:
+                candidates.add((row.video_id, int(f)))
+            continue
+        # khong co frame nao nam CHAT trong khoang - fallback ve frame GAN NHAT (truoc/sau).
+        mid = (row.frame_idx_start + row.frame_idx_end) / 2
+        cand_positions = [p for p in (lo - 1, lo) if 0 <= p < len(frames)]
+        if not cand_positions:
+            continue
+        best_pos = min(cand_positions, key=lambda p: abs(frames[p] - mid))
+        candidates.add((row.video_id, int(frames[best_pos])))
+    return candidates
 
 
 @lru_cache(maxsize=1)
@@ -899,12 +1076,30 @@ def _rank_single_remote(
     (xem offline/modal_infra/dense_index_app.py) thay vi nap ~7.4GB matrix+faiss vao RAM may
     local (2026-08-16, theo yeu cau nguoi dung "may minh moi lan chay len no chiem gan het
     RAM"). candidates=None -> server tim tren TOAN BO index qua FAISS; [] -> tra rong NGAY
-    (khong goi mang, giu dung ngu nghia "khong loc gi" cu)."""
+    (khong goi mang, giu dung ngu nghia "khong loc gi" cu).
+
+    2026-08-20 (theo yeu cau nguoi dung: "vẫn chạy bằng Modal... TRAKE mở rộng pool lên 20000
+    chạy cực kỳ lâu, 160s" - da do that: pool_k=20000 remote ~10.9s/model, local ~0.66s -
+    KHONG phai FAISS server-side cham (do lai xac nhan FAISS gan nhu KHONG doi theo top_k) MA
+    la PAYLOAD TRUYEN QUA MANG cang lon top_k cang nang, dac biet cot "path" (chuoi duong dan
+    tuyet doi dai) x hang chuc nghin dong): goi rank(..., light=True) - server CHI tra
+    [video_id, frame_id, score] (khong shot_idx/path) - GHEP LAI 2 cot do TU dense_meta.parquet
+    CUC BO (_load_dense_meta(), khong qua Modal - file nay LUON co san local du AIC_LOCAL_MODELS
+    bat/tat, xem docstring _load_dense_meta) qua _load_dense_row_pos() (O(1) tra cuu, da cache).
+    Giam dang ke kich thuoc phan hoi mang, khong doi KET QUA (video_id/frame_id/score giong
+    het, chi shot_idx/path lay tu nguon LOCAL thay vi qua mang)."""
     if candidates is not None and not candidates:
         return pd.DataFrame(columns=_EMPTY_RANK_COLUMNS)
     candidate_keys = [[vid, int(fid)] for vid, fid in candidates] if candidates is not None else None
     try:
-        rows = _dense_index_server().rank.remote(model, qvec[0].tolist(), top_k, candidate_keys)
+        # 2026-08-20 (theo yeu cau nguoi dung, tiep tuc sau timeout NIM: diem treo THAT SU la
+        # .remote() khong co timeout) - dung call_modal_with_timeout thay vi .remote() truc tiep.
+        rows = call_modal_with_timeout(
+            _dense_index_server().rank, model, qvec[0].tolist(), top_k, candidate_keys,
+            light=True, context=f"xếp hạng {model}",
+        )
+    except ModalTimeoutError:
+        raise
     except Exception as e:
         raise RuntimeError(
             f"Không gọi được server Modal aic2026-dense-index ({type(e).__name__}: {e}) — "
@@ -913,7 +1108,34 @@ def _rank_single_remote(
         ) from e
     if not rows:
         return pd.DataFrame(columns=_EMPTY_RANK_COLUMNS)
-    return pd.DataFrame(rows)
+
+    # 2026-08-20 (toi uu tiep - do that: goi RPC light=True DA nhanh that (k=20000: 1.9s vs 5.3s
+    # ban day du, ~2.8 lan), nhung buoc GHEP LAI shot_idx/path o duoi TRUOC DAY dung vong lap
+    # Python + pandas `.iat[]` tung dong (cham, dung nguyen mau hinh da gap voi OCR/shot_bounds
+    # truoc do) - AN HET phan loi ich vua co duoc. Fix: vector hoa hoan toan bang numpy fancy
+    # indexing thay vi loop + .iat[]."""
+    row_pos = _load_dense_row_pos()
+    video_ids_raw = [r[0] for r in rows]
+    frame_ids_raw = [int(r[1]) for r in rows]
+    scores_raw = [float(r[2]) for r in rows]
+    positions = np.array(
+        [row_pos.get((vid, fid), -1) for vid, fid in zip(video_ids_raw, frame_ids_raw)], dtype=np.int64
+    )
+    valid = positions >= 0  # phong than: khong nen co -1 (server dung CHUNG dense_meta voi local)
+    if not valid.all():
+        positions = positions[valid]
+        video_ids_raw = [v for v, ok in zip(video_ids_raw, valid) if ok]
+        frame_ids_raw = [f for f, ok in zip(frame_ids_raw, valid) if ok]
+        scores_raw = [s for s, ok in zip(scores_raw, valid) if ok]
+
+    meta = _load_dense_meta()
+    shot_idx_arr = meta["shot_idx"].values
+    path_arr = meta["path"].values
+    return pd.DataFrame({
+        "video_id": video_ids_raw, "frame_id": frame_ids_raw,
+        "shot_idx": shot_idx_arr[positions].astype(int), "path": path_arr[positions],
+        "score": scores_raw,
+    })
 
 
 def _rank_single(
@@ -962,7 +1184,7 @@ def _rank_rrf(
     model nao do coi nhu rank vo cung, dong gop 0 tu model do - KHONG loai anh, chi khong duoc
     cong tu nguon do).
     log: truyen xuong _rank_single() cho TUNG model - xem timing rieng cua tung model trong 1
-    lan chay rrf (thuong la model cham nhat quyet dinh tong thoi gian, vi chay TUAN TU).
+    lan chay rrf.
 
     BUG THAT (2026-08-19, phat hien qua TRAKE 4-moc "cắt nấm/củ năng/đậu hủ/lên bếp" - dense_
     model="rrf" (mac dinh UI, nut "All") tra ve 0 KET QUA HOAN TOAN, du dense_temporal.py da mo
@@ -971,12 +1193,35 @@ def _rank_rrf(
     top_k=1000 hay 20000. Callers (dense_temporal._run_anchor_pool voi coarse_k lon, search_dense
     backfill voi top_k lon) tuong minh xin duoc top_k ung vien nhung THAT SU chi nhan duoc <=400.
     Fix: pool_k KHONG DUOC nho hon top_k - can it nhat top_k ung vien/model moi co co hoi fuse ra
-    du top_k ket qua cuoi cung."""
+    du top_k ket qua cuoi cung.
+
+    2026-08-20 (theo yeu cau nguoi dung: "chạy song song mô hình embedding... vẫn giữ thời gian
+    chạy như chạy từng cái") - 2 model TRUOC DAY chay TUAN TU (for loop) - tong thoi gian ~=
+    thoi_gian(siglip) + thoi_gian(pe_core). Chuyen sang goi CA 2 CUNG LUC bang ThreadPoolExecutor
+    (KHONG phai multiprocessing - _rank_single() hoac cho MANG (Modal .remote(), I/O-bound, nha
+    GIL khi cho) hoac tinh toan numpy/faiss/torch (deu nha GIL trong phan C/C++ nang), nen
+    threading la du, khong can multiprocessing nang hon) - tong thoi gian ~= max(thoi_gian(sig
+    lip), thoi_gian(pe_core)) thay vi cong don, GIU NGUYEN thoi gian TUNG MODEL rieng le (khong
+    doi logic/tham so cua _rank_single, chi doi CACH GOI). log.timed() ben trong _rank_single()
+    van AN TOAN khi goi tu nhieu thread (list.append thread-safe trong CPython/GIL) - thu tu cac
+    dong log co the doi (model nao xong TRUOC len log TRUOC) nhung khong sai lech du lieu."""
     pool_k = max(pool_k, top_k)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(RRF_FUSION_MODELS)) as executor:
+        futures = {
+            model: executor.submit(
+                _rank_single, query, model, pool_k, candidates=candidates,
+                score_algorithm=score_algorithm, log=log,
+            )
+            for model in RRF_FUSION_MODELS
+        }
+        ranked_by_model = {model: fut.result() for model, fut in futures.items()}
+
     rrf_scores: dict[tuple, float] = {}
     per_model_row: dict[tuple, pd.Series] = {}
     for model in RRF_FUSION_MODELS:
-        ranked = _rank_single(query, model, pool_k, candidates=candidates, score_algorithm=score_algorithm, log=log)
+        ranked = ranked_by_model[model]
         for rank, (_, row) in enumerate(ranked.iterrows(), start=1):
             key = (row["video_id"], int(row["frame_id"]))
             rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
@@ -1105,20 +1350,22 @@ def _combine_candidates(
     must_have_labels: list[str] | None = None,
     min_count: dict[str, int] | None = None,
     ocr_text: str | None = None,
+    asr_text: str | None = None,
     spatial_boxes: list[dict] | None = None,
     spatial_op: str = "and",
     ocr_algorithm: str = DEFAULT_OCR_ALGORITHM,
 ) -> set[tuple[str, int]] | None:
-    """Gop metadata (video-level) + object + OCR (frame-level) + khung vi tri (spatial_boxes)
-    thanh 1 tap (video_id, frame_idx). Cac khung vi tri gop VOI NHAU theo spatial_op ("and"/
-    "or"), ROI ket qua do lai AND voi metadata/object/OCR toan cuc (giong tier1_filter.apply()
-    nhung key la frame_idx)."""
+    """Gop metadata (video-level) + object + OCR (frame-level) + ASR (frame-level, xem
+    _asr_candidates) + khung vi tri (spatial_boxes) thanh 1 tap (video_id, frame_idx). Cac
+    khung vi tri gop VOI NHAU theo spatial_op ("and"/"or"), ROI ket qua do lai AND voi metadata/
+    object/OCR/ASR toan cuc (giong tier1_filter.apply() nhung key la frame_idx)."""
     video_allowed = by_metadata(authors, date_from, date_to, keywords_any)
     object_allowed = _object_candidates(must_have_labels, min_count)
     text_allowed = _ocr_candidates(ocr_text, ocr_algorithm) if ocr_text else None
+    audio_allowed = _asr_candidates(asr_text) if asr_text else None
     spatial_allowed = _spatial_box_candidates(spatial_boxes, spatial_op, ocr_algorithm) if spatial_boxes else None
 
-    frame_sets = [s for s in (object_allowed, text_allowed, spatial_allowed) if s is not None]
+    frame_sets = [s for s in (object_allowed, text_allowed, audio_allowed, spatial_allowed) if s is not None]
     if video_allowed is None and not frame_sets:
         return None
 
@@ -1147,6 +1394,7 @@ def search_dense(
     keywords_any: list[str] | None = None,
     must_have_labels: list[str] | None = None,
     min_count: dict[str, int] | None = None,
+    asr_text: str | None = None,
     spatial_boxes: list[dict] | None = None,
     spatial_op: str = "and",
     audio_mentions: list[dict] | None = None,
@@ -1163,7 +1411,14 @@ def search_dense(
     (khong xet vi tri - OWLv2 closed-set, xem _object_candidates). spatial_boxes: khung OCR/
     Object CO vi tri tu canvas (xem _spatial_box_candidates + app.py). spatial_op: "and" (frame
     phai khop DU moi khung) hoac "or" (khop BAT KY khung nao). audio_mentions: [{"term": str}]
-    tu LLM (query_planner.py) - soft-boost theo loi noi GAN frame (xem _audio_mention_boost).
+    tu LLM (query_planner.py) - soft-boost theo loi noi GAN frame (xem _audio_mention_boost) -
+    KHONG loai frame nao, chi cong diem nhe.
+
+    asr_text (2026-08-20, theo yeu cau nguoi dung: "tích hợp search theo ASR... đảm bảo những
+    câu như... nặng đến 211kg... mà embedding model thường không thấy") - HARD FILTER theo loi
+    noi (khac audio_mentions o tren - do la SOFT boost tu LLM tu dong, con day la nguoi dung TU
+    DIEN, giong OCR): None/"" = khong loc. Frame hop le = nam trong khoang thoi gian cua 1 doan
+    ASR co text_norm chua asr_text (ordered-substring, xem _asr_candidates).
     ocr_algorithm: key trong tier1_filter.OCR_MATCH_ALGORITHMS ("flexible" mac dinh - nguoi
     dung chon o UI, xem app.py) - dung CHUNG cho ca hard-filter OCR (ocr_text/spatial_boxes)
     LAN soft-boost do gon khop (_ocr_match_quality_boost/_spatial_position_boost).
@@ -1193,11 +1448,11 @@ def search_dense(
     # cache, doc lai tu dia MOI LAN goi, xem _ocr_candidates/_ocr_box_candidates) co the ton
     # vai giay ma hoan toan "vo hinh" trong log - day la 1 trong 2 nguon gay lech "tong 30s vs
     # log cong lai chi 5s" (nguon con lai: xem backfill duoi day).
-    with (log.timed("Lọc thô (metadata/object/OCR/khung vẽ)") if log else contextlib.nullcontext(lambda *_a, **_k: None)) as set_detail:
+    with (log.timed("Lọc thô (metadata/object/OCR/ASR/khung vẽ)") if log else contextlib.nullcontext(lambda *_a, **_k: None)) as set_detail:
         candidates = _combine_candidates(
             authors=authors, date_from=date_from, date_to=date_to, keywords_any=keywords_any,
             must_have_labels=must_have_labels, min_count=min_count, ocr_text=ocr_text,
-            spatial_boxes=spatial_boxes, spatial_op=spatial_op, ocr_algorithm=ocr_algorithm,
+            asr_text=asr_text, spatial_boxes=spatial_boxes, spatial_op=spatial_op, ocr_algorithm=ocr_algorithm,
         )
         if log:
             set_detail("không lọc gì (candidates=None)" if candidates is None else f"{len(candidates)} frame ứng viên")

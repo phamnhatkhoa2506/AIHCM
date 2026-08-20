@@ -31,9 +31,23 @@ import modal
 import numpy as np
 import pandas as pd
 
-from config import INDEX_DIR, OBJECTS_INDEX_PATH
+from config import CLIP_TEXT_MODEL_NAME, INDEX_DIR, MODEL_CACHE_DIR, OBJECTS_INDEX_PATH
 from region_clip import crop_region
-from tiers.tier2_vector import encode_query
+
+# 2026-08-20 (theo yeu cau nguoi dung: "dọn dẹp triệt để") - TRUOC DAY dung tiers.tier2_vector.
+# encode_query() (pipeline CLIP-32 cu, da xoa) - encode text CHI can 1 SentenceTransformer nhe,
+# khong can ca bo may resources.get() (model+faiss+matrix) cua pipeline do. Load truc tiep tai
+# day, lazy singleton giong pattern region_clip.py::_get_image_model.
+_text_model = None
+
+
+def encode_query(text: str):
+    global _text_model
+    if _text_model is None:
+        from sentence_transformers import SentenceTransformer
+
+        _text_model = SentenceTransformer(CLIP_TEXT_MODEL_NAME, cache_folder=str(MODEL_CACHE_DIR))
+    return _text_model.encode([text], convert_to_numpy=True, normalize_embeddings=True)
 
 N_PER_LABEL = 25
 SEED = 42

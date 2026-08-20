@@ -40,6 +40,11 @@ MODELS = ("siglip", "pe_core", "beit3")
     timeout=120,
     volumes={VOLUME_MOUNT: dense_index_vol},
 )
+# 2026-08-20 (cung ly do voi query_encoders_app.py::QueryEncoder - xem ghi chu o do): _rank_rrf
+# goi CA 2 model (siglip/pe_core) "song song" qua thread, nhung neu container nay khong cho
+# concurrent thi request thu 2 van phai XEP HANG cho request dau xong tren server that. rank()
+# CHI DOC self._matrix/self._index/self._meta (khong ghi/doi) nen an toan chay dong thoi.
+@modal.concurrent(max_inputs=8)
 class DenseIndexServer:
     @modal.enter()
     def load(self):
@@ -61,11 +66,22 @@ class DenseIndexServer:
 
     @modal.method()
     def rank(
-        self, model: str, query_vec: list[float], top_k: int, candidate_keys: list[list] | None
-    ) -> list[dict]:
+        self, model: str, query_vec: list[float], top_k: int, candidate_keys: list[list] | None,
+        light: bool = False,
+    ) -> list:
         """Y HET logic _rank_single() cu (dense_search.py) - candidate_keys=None -> tim tren
         TOAN BO index qua FAISS; [] -> tra rong (khong phai "khong loc"); co gia tri -> tinh
-        cosine TRUC TIEP tren dung tap do (KHONG dung FAISS-pool-roi-loc)."""
+        cosine TRUC TIEP tren dung tap do (KHONG dung FAISS-pool-roi-loc).
+
+        light (2026-08-20, theo yeu cau nguoi dung: "vẫn chạy bằng Modal... TRAKE mở rộng pool
+        lên 20000 chạy cực kỳ lâu, 160s"): do that goc re THAT SU la TRUYEN TAI qua mang (FAISS
+        server-side gan nhu KHONG doi theo top_k, xem dense_search.py - nhung payload tra ve
+        cang lon top_k cang nang, dac biet cot "path" la CHUOI DUONG DAN TUYET DOI dai). light=
+        True -> CHI tra [video_id, frame_id, score] (list 3 phan tu, KHONG co shot_idx/path,
+        KHONG doc self._meta.iloc[pos] - re hon CA server-side) - client tu ghep lai shot_idx/
+        path tu dense_meta.parquet DA CO SAN LOCAL (khong qua Modal, xem
+        _rank_single_remote()). light=False (mac dinh) giu HANH VI CU (dict day du) - tuong
+        thich nguoc cho caller nao con goi truc tiep khong qua _rank_single_remote."""
         import numpy as np
 
         matrix = self._matrix[model]
@@ -88,6 +104,14 @@ class DenseIndexServer:
             sc = sub @ qvec[0]
             order = np.argsort(-sc)[:top_k]
             rows_iter = list(zip(positions[order].tolist(), sc[order].tolist()))
+
+        if light:
+            vid_arr = self._meta["video_id"].values
+            fidx_arr = self._meta["frame_idx"].values
+            return [
+                [vid_arr[pos], int(fidx_arr[pos]), float(score)]
+                for pos, score in rows_iter
+            ]
 
         out = []
         for pos, score in rows_iter:

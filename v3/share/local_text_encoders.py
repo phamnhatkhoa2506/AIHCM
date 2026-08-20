@@ -17,6 +17,8 @@ from functools import lru_cache
 
 import numpy as np
 
+from app_flags import call_modal_with_timeout
+
 MODAL_APP_NAME = "aic2026-query-encoders"
 MODAL_CLASS_NAME = "QueryEncoder"
 
@@ -177,18 +179,26 @@ def _local_encoder() -> _LocalQueryEncoder:
     return _LocalQueryEncoder()  # nap 3 model, chi 1 LAN (module-level cache) - cham lan dau
 
 
+# 2026-08-20 (theo yeu cau nguoi dung: "hơn 1 phút nhưng chưa hết exception nào được raise" -
+# sau khi da them timeout cho NIM, xac nhan diem treo THAT SU la o day - .remote() KHONG co
+# timeout, co the treo VO HAN neu container Modal cold-start qua lau/mang loi) - dung
+# call_modal_with_timeout() (spawn+get(timeout=...), xem app_flags.py) thay vi .remote() truc
+# tiep, nem ModalTimeoutError ro rang thay vi treo.
 def encode_text_siglip(text: str) -> np.ndarray:
-    vec = _local_encoder().encode_siglip_text(text) if _local_mode() else _remote_encoder().encode_siglip_text.remote(text)
+    vec = (_local_encoder().encode_siglip_text(text) if _local_mode() else
+           call_modal_with_timeout(_remote_encoder().encode_siglip_text, text, context="encode SigLIP2"))
     return np.asarray([vec], dtype=np.float32)
 
 
 def encode_text_pe_core(text: str) -> np.ndarray:
-    vec = _local_encoder().encode_pe_core_text(text) if _local_mode() else _remote_encoder().encode_pe_core_text.remote(text)
+    vec = (_local_encoder().encode_pe_core_text(text) if _local_mode() else
+           call_modal_with_timeout(_remote_encoder().encode_pe_core_text, text, context="encode PE-Core"))
     return np.asarray([vec], dtype=np.float32)
 
 
 def encode_text_beit3(text: str) -> np.ndarray:
-    vec = _local_encoder().encode_beit3_text(text) if _local_mode() else _remote_encoder().encode_beit3_text.remote(text)
+    vec = (_local_encoder().encode_beit3_text(text) if _local_mode() else
+           call_modal_with_timeout(_remote_encoder().encode_beit3_text, text, context="encode BEiT-3"))
     return np.asarray([vec], dtype=np.float32)
 
 

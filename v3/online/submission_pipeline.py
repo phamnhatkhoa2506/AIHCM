@@ -1,10 +1,21 @@
 """Sinh câu trả lời ĐÚNG ĐỊNH DẠNG NỘP BÀI cho 3 dạng truy vấn BTC (xem
 `Thong tin vong So tuyen AIC2026.pdf`, mục 1): Textual KIS, Q&A, TRAKE.
 
-Ưu tiên CHẠY ĐÚNG ĐỊNH DẠNG trước — tái dùng nguyên `search()` (Tầng 1+2) và
-`tiers.tier3_temporal.search()` (đã có, đã test) cho phần retrieval, chỉ thêm phần ĐỊNH DẠNG
-output đúng như BTC yêu cầu + 1 khả năng hoàn toàn mới cho Q&A (sinh câu trả lời — VQA).
-Thuật toán xếp hạng/chất lượng để tối ưu sau, không phải việc của file này.
+Tái dùng nguyên `tiers.dense_search.search_dense()` (Tầng 1+2) và `tiers.dense_temporal.search()`
+(đã có, đã test) cho phần retrieval — ĐÚNG pipeline dense mà app.py (UI live) đang chạy, chỉ
+thêm phần ĐỊNH DẠNG output đúng như BTC yêu cầu + 1 khả năng hoàn toàn mới cho Q&A (sinh câu trả
+lời — VQA). Thuật toán xếp hạng/chất lượng để tối ưu sau, không phải việc của file này.
+
+# 2026-08-20 (theo yeu cau nguoi dung: "dọn dẹp triệt để... không còn gọi CLIP") - answer_kis/
+# answer_trake TRUOC DAY dung pipeline CLIP-32/keyframe BTC goc (planned_search() ->
+# search()/tier2_vector.py, tier3_temporal.search()) - pipeline nay KHONG con duoc app.py goi
+# (UI live da chuyen han sang dense_search/dense_temporal tu 2026-08-15/18), chi con ton tai de
+# lam BASELINE SO SANH trong offline/benchmark/evaluate.py. Da xac nhan qua benchmark that
+# (memory du an: SigLIP2 R@1=0.30 vs CLIP-32 0.16) dense pipeline thang ro, khong con can baseline
+# nua - doi thang sang search_dense()/dense_temporal.search() (dung CHUNG code voi app.py, benchmark
+# gio do DUNG THU app.py dang chay, khong phai 1 pipeline rieng dang chet dan). Xoa han online/
+# search.py, tiers/tier2_vector.py, tiers/tier3_temporal.py, query_planner.planned_search()/
+# _apply_region_clip_rerank() (xem git history neu can xem lai pipeline cu).
 
 Định dạng theo PDF:
   KIS:   <video_id>, <frame_id>
@@ -24,15 +35,15 @@ import base64
 import json
 import os
 
+import openai
 import pandas as pd
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from app_flags import DISABLE_LLM_ENTITY_HARD_FILTER
-from query_planner import extract_entities, planned_search
-from search import search
+from app_flags import DISABLE_LLM_ENTITY_HARD_FILTER, NIM_TIMEOUT_SECONDS, NIMTimeoutError
+from query_planner import extract_entities
 from steplog import StepLog
-from tiers import tier3_temporal
+from tiers import dense_temporal
 from tiers.dense_search import (
     ASR_CONTEXT_WINDOW_SECONDS,
     _fps_by_video,
@@ -42,28 +53,30 @@ from tiers.dense_search import (
 )
 
 SUBMISSION_TOP_K = 100
+DEFAULT_BENCHMARK_DENSE_MODEL = "siglip"  # dung model thang benchmark ro nhat (xem memory du an)
 
 
-def answer_kis(query: str, top_k: int = SUBMISSION_TOP_K, log: StepLog | None = None, **filters) -> pd.DataFrame:
+def answer_kis(
+    query: str, top_k: int = SUBMISSION_TOP_K, dense_model: str = DEFAULT_BENCHMARK_DENSE_MODEL,
+    log: StepLog | None = None, **filters,
+) -> pd.DataFrame:
     """Textual KIS -> DataFrame [video_id, frame_id], đã xếp hạng (dòng đầu = rank 1, nộp
-    theo đúng thứ tự này).
-
-    SUA 2026-08-07: truoc day goi search() THUAN (chi CLIP Tang 2), bo qua HOAN TOAN
-    query_planner (hard-filter entity, Region-CLIP thuoc tinh, secondary entity boost da xay
-    dung rieng) - phat hien khi benchmark ra 0.0 diem: video DUNG nam trong top 100 nhung sai
-    frame rat xa (vd kis_001: dung video nhung frame 384 thay vi [3454,3754]) vi CLIP thuan
-    khong du manh phan biet chi tiet trong 1 video dai. Doi sang planned_search() de dung het
-    may moc da xay."""
-    r, _plan = planned_search(query, top_k=top_k, log=log, **filters)
-    return r.rename(columns={"frame_idx": "frame_id"})[["video_id", "frame_id"]].reset_index(drop=True)
+    theo đúng thứ tự này). Gọi search_dense() TRỰC TIẾP (KHÔNG qua query_planner/LLM entity
+    hard-filter - giống hành vi MẶC ĐỊNH của app.py khi checkbox "Dùng LLM phân rã câu" tắt,
+    xem app.py::DISABLE_LLM_ENTITY_HARD_FILTER) - benchmark đo ĐÚNG pipeline app.py chạy thật."""
+    r = search_dense(query, dense_model, top_k=top_k, log=log, **filters)
+    return r[["video_id", "frame_id"]].reset_index(drop=True)
 
 
-def answer_trake(anchors: list[str | dict], top_k: int = SUBMISSION_TOP_K, **filters) -> pd.DataFrame:
+def answer_trake(
+    anchors: list[str | dict], top_k: int = SUBMISSION_TOP_K,
+    dense_model: str = DEFAULT_BENCHMARK_DENSE_MODEL, log: StepLog | None = None, **filters,
+) -> pd.DataFrame:
     """TRAKE -> DataFrame [video_id, frame_id_1, ..., frame_id_n], đã xếp hạng."""
-    r = tier3_temporal.search(anchors, top_k=top_k, **filters)
+    r = dense_temporal.search(anchors, top_k=top_k, dense_model=dense_model, log=log, **filters)
     n = len(anchors)
-    rename = {f"anchor{i}_frame_idx": f"frame_id_{i + 1}" for i in range(n)}
-    cols = ["video_id"] + [f"anchor{i}_frame_idx" for i in range(n)]
+    rename = {f"anchor{i}_frame_id": f"frame_id_{i + 1}" for i in range(n)}
+    cols = ["video_id"] + [f"anchor{i}_frame_id" for i in range(n)]
     return r[cols].rename(columns=rename).reset_index(drop=True)
 
 
@@ -74,7 +87,13 @@ def answer_trake(anchors: list[str | dict], top_k: int = SUBMISSION_TOP_K, **fil
 NIM_VQA_MODEL = "meta/llama-3.2-11b-vision-instruct"
 
 load_dotenv()
-_nim_client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=os.environ["NVIDIA_NIM_API_KEY"])
+# timeout=NIM_TIMEOUT_SECONDS (2026-08-20, theo yeu cau nguoi dung - xem app_flags.py): tranh
+# treo VO HAN khi NIM khong phan hoi (khong dat truoc day, xem BUG THAT trong query_distill.py).
+_nim_client = OpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key=os.environ["NVIDIA_NIM_API_KEY"],
+    timeout=NIM_TIMEOUT_SECONDS,
+)
 
 
 def _dense_asr_context_for(video_id: str, frame_id: int, window_seconds: float = ASR_CONTEXT_WINDOW_SECONDS) -> str:
@@ -130,24 +149,28 @@ def _vqa_answer_dense(image_path: str, question: str, asr_context: str = "") -> 
             f'"{asr_context}"'
         )
 
-    resp = _nim_client.chat.completions.create(
-        model=NIM_VQA_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": system_content,
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": question},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                ],
-            },
-        ],
-        max_tokens=100,
-        temperature=0.1,
-    )
+    try:
+        resp = _nim_client.chat.completions.create(
+            model=NIM_VQA_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_content,
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": question},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                    ],
+                },
+            ],
+            max_tokens=100,
+            temperature=0.1,
+        )
+    except openai.APITimeoutError as e:
+        # 2026-08-20 (theo yeu cau nguoi dung) - RAISE ro rang thay vi de treo vo han/loi tho.
+        raise NIMTimeoutError(f"VQA (model={NIM_VQA_MODEL})") from e
     content = resp.choices[0].message.content.strip()
     content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
@@ -208,21 +231,27 @@ def vlm_read_text(image_path: str, model: str = DEFAULT_VLM_OCR_MODEL) -> str:
         "an empty string. Reply with ONLY a JSON object: {\"text\": \"...\"} — no markdown fences, "
         "no explanation."
     )
-    resp = _nim_client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_content},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Đọc toàn bộ chữ trong ảnh."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                ],
-            },
-        ],
-        max_tokens=300,
-        temperature=0.1,
-    )
+    try:
+        resp = _nim_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_content},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Đọc toàn bộ chữ trong ảnh."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                    ],
+                },
+            ],
+            max_tokens=300,
+            temperature=0.1,
+        )
+    except openai.APITimeoutError as e:
+        # 2026-08-20 (theo yeu cau nguoi dung) - RAISE ro rang - app.py::_render_vlm_ocr_verify
+        # da co san except Exception BAO NGOAI, hien "LỖI: ..." ngay trong popover, khong can
+        # sua them o do.
+        raise NIMTimeoutError(f"VLM đọc chữ (model={model})") from e
     content = resp.choices[0].message.content.strip()
     content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
@@ -238,10 +267,22 @@ def answer_qa(
     vqa_top_n: int = 5,
     dense_model: str = "rrf",
     use_region_clip_rerank: bool = True,
+    use_lvlm: bool = False,
+    use_llm_entity: bool = False,
     log: StepLog | None = None,
     **filters,
 ) -> pd.DataFrame:
     """Q&A -> DataFrame [video_id, frame_id, path, score, answer, is_backfill], đã xếp hạng.
+
+    use_lvlm (2026-08-20, theo yêu cầu người dùng: "Dùng LVLM để trả lời giờ là 1 option và để
+    mặc định là không dùng") - MẶC ĐỊNH False: KHÔNG gọi VQA thật nữa (answer để RỖNG, người
+    dùng tự gõ câu trả lời trong Playback trước khi nộp — xem app.py::_render_playback). True
+    -> giữ NGUYÊN hành vi cũ (gọi NIM VQA thật cho top vqa_top_n ứng viên).
+
+    use_llm_entity (2026-08-20, theo yêu cầu người dùng: "trước đó mình muốn thêm option cho
+    [LLM phân rã câu]... mặc định là tắt", dùng CHUNG 1 checkbox với app.py cho cả KIS/Q&A) -
+    MẶC ĐỊNH False: KHÔNG gọi extract_entities() (LLM thật, ~3s + phí API) - dùng STUB rỗng,
+    Region-CLIP rerank/ASR audio_mentions tự động không có gì để chạy (PHỤ THUỘC vào cờ này).
 
     MIGRATE sang BỘ DENSE (2026-08-15, theo yêu cầu người dùng "sửa Q&A theo bộ dữ liệu mới")
     — dùng search_dense() + extract_entities() (ĐÚNG pattern đường "1 câu" chính trong app.py)
@@ -261,7 +302,16 @@ def answer_qa(
     filters.pop("include_open_vocab", None)
     filters.pop("ocr_region", None)
 
-    plan = extract_entities(event_text, log=log)
+    if use_llm_entity:
+        plan = extract_entities(event_text, log=log)
+    else:
+        plan = {
+            "entities": [], "secondary_entities": [], "attributes": [],
+            "audio_mentions": [], "clip_text": event_text, "unresolved": [],
+            "resolved_must_have_labels": [], "resolved_min_count": {},
+        }
+        if log:
+            log.add("LLM phân rã câu (NIM)", "TẮT (checkbox người dùng) — bỏ qua hoàn toàn", 0.0)
     user_must_have = filters.pop("must_have_labels", None) or []
     user_min_count = filters.pop("min_count", None) or {}
     # 2026-08-17 (GAC LAI de TEST - xem share/app_flags.py cho ly do day du: LLM plan_query()
@@ -288,6 +338,16 @@ def answer_qa(
     )
     if attributes and not r.empty:
         r = apply_region_clip_rerank(r, attributes, top_k, log=log)
+
+    if not use_lvlm:
+        # 2026-08-20 (theo yeu cau nguoi dung: "Dùng LVLM để trả lời giờ là 1 option và để mặc
+        # định là không dùng") - KHONG goi VQA cho BAT KY dong nao, "answer" de RONG toan bo -
+        # nguoi dung tu go trong Playback (xem app.py) truoc khi nop.
+        r["answer"] = ""
+        cols = ["video_id", "frame_id", "path", "score", "answer"]
+        if "is_backfill" in r.columns:
+            cols.append("is_backfill")
+        return r[cols].reset_index(drop=True)
 
     answers = []
     best_answer = ""

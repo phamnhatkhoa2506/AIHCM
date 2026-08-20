@@ -15,20 +15,25 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 import json
 
-import faiss
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 
 from config import (
-    CLIP_TEXT_MODEL_NAME,
     INDEX_DIR,
-    INDEX_FAISS_PATH,
-    INDEX_MATRIX_PATH,
     INDEX_META_PATH,
     OBJECTS_INDEX_PATH,
     VIDEO_METADATA_PATH,
 )
+
+# 2026-08-20 (theo yeu cau nguoi dung: "dọn dẹp triệt để... không còn gọi CLIP") - TRUOC DAY
+# Resources con giu model (SentenceTransformer CLIP_TEXT_MODEL_NAME)/index (faiss)/matrix
+# (clip_matrix.npy) CHI de phuc vu tiers/tier2_vector.py (pipeline CLIP-32 cu, DA XOA) - nap
+# CA 3 THU nay TON KHONG NHO (SentenceTransformer + faiss index + numpy matrix mac du KHONG AI
+# DOC) MOI LAN app.py khoi dong (get() la lazy singleton, nhung app.py van goi qua tier1_filter
+# cho hard-filter OCR/object nen van trigger load). Bo han 3 truong nay - Resources gio CHI con
+# du lieu tier1_filter.py THAT SU dung (video_meta/objects_index/ocr_index/asr_index/row_pos).
+# `meta` (INDEX_META_PATH) van doc de xay row_pos, nhung KHONG con expose ca DataFrame (khong ai
+# can) - chi giu row_pos (dict) nhe hon nhieu.
 
 OPEN_VOCAB_DETECTIONS_PATH = INDEX_DIR / "open_vocab_detections.parquet"
 SUPPRESSED_AUDIT_PATH = INDEX_DIR / "closed_set_suppressed_by_open_vocab.parquet"
@@ -118,10 +123,6 @@ def _mark_suppressed_closed_rows(closed: pd.DataFrame, open_vocab: pd.DataFrame)
 
 @dataclass
 class Resources:
-    model: SentenceTransformer
-    index: faiss.Index
-    matrix: np.ndarray
-    meta: pd.DataFrame
     row_pos: dict[tuple[str, int], int]
     video_meta: pd.DataFrame
     objects_index: pd.DataFrame | None
@@ -169,9 +170,6 @@ def get() -> Resources:
     if _resources is not None:
         return _resources
 
-    model = SentenceTransformer(CLIP_TEXT_MODEL_NAME, cache_folder=str(MODEL_CACHE_DIR))
-    index = faiss.read_index(str(INDEX_FAISS_PATH))
-    matrix = np.load(INDEX_MATRIX_PATH)
     meta = pd.read_parquet(INDEX_META_PATH)
     row_pos = {(vid, li): i for i, (vid, li) in enumerate(zip(meta["video_id"], meta["local_idx"]))}
     video_meta = pd.read_parquet(VIDEO_METADATA_PATH)
@@ -180,10 +178,6 @@ def get() -> Resources:
     asr_index = pd.read_parquet(ASR_TEXT_PATH) if ASR_TEXT_PATH.exists() else None
 
     _resources = Resources(
-        model=model,
-        index=index,
-        matrix=matrix,
-        meta=meta,
         row_pos=row_pos,
         video_meta=video_meta,
         objects_index=objects_index,

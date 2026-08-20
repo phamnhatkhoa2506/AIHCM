@@ -32,6 +32,15 @@ from tiers.dense_search import _fps_by_video, search_dense
 
 DEFAULT_COARSE_K = 1000
 
+# 2026-08-20 (theo yeu cau nguoi dung, sau khi toi uu toc do Modal light-payload van con ~51s
+# cho 3 moc "vi nuong/xot cham/dia trang tri" - "Ok giảm luôn bạn"): he so mo rong pool Level-2
+# (backfill/nang cap, xem "widen_k" duoi day) HA tu x20 xuong x8 - it ung vien hon -> nhanh hon
+# ro ret (encode+rank scale gan tuyen tinh theo so ung vien qua Modal, xem dense_search.py::
+# _rank_single_remote), DANH DOI: giam kha nang tim ra video dung khi cac moc RAT khac biet ve
+# ngu nghia (nhu case "cắt nấm/củ năng" truoc do, GT o rank ~1783 trong top-1000/anchor - x8 =
+# 8000 van du bat duoc case do, chi cac case can toi tan rank ~15000-20000 moi bi anh huong).
+WIDEN_POOL_FACTOR = 8
+
 
 def _run_anchor_pool(
     anchor_text: str,
@@ -41,6 +50,7 @@ def _run_anchor_pool(
     must_have_labels: list[str] | None,
     min_count: dict[str, int] | None,
     ocr_text: str | None,
+    asr_text: str | None,
     spatial_boxes: list[dict] | None,
     spatial_op: str,
     ocr_algorithm: str,
@@ -52,7 +62,7 @@ def _run_anchor_pool(
     ranked = search_dense(
         anchor_text, dense_model, top_k=coarse_k,
         must_have_labels=must_have_labels, min_count=min_count, ocr_text=ocr_text,
-        spatial_boxes=spatial_boxes, spatial_op=spatial_op, ocr_algorithm=ocr_algorithm,
+        asr_text=asr_text, spatial_boxes=spatial_boxes, spatial_op=spatial_op, ocr_algorithm=ocr_algorithm,
         score_algorithm=score_algorithm, distill_model=distill_model, log=log,
     )
     return {
@@ -203,15 +213,20 @@ def _temporal_join(
 
 def _normalize_anchor(a: str | dict) -> dict:
     """Giong tier3_temporal.py::_normalize_anchor (ban BTC), THEM spatial_boxes rieng cho tung
-    anchor (2026-08-15, canvas rieng/moc) - anchor la string (khong filter rieng) hoac dict
-    {"text", "must_have_labels", "min_count", "ocr_text", "spatial_boxes"}."""
+    anchor (2026-08-15, canvas rieng/moc) + asr_text rieng (2026-08-20, xem docstring search())
+    - anchor la string (khong filter rieng) hoac dict
+    {"text", "must_have_labels", "min_count", "ocr_text", "asr_text", "spatial_boxes"}."""
     if isinstance(a, str):
-        return {"text": a, "must_have_labels": None, "min_count": None, "ocr_text": None, "spatial_boxes": None}
+        return {
+            "text": a, "must_have_labels": None, "min_count": None,
+            "ocr_text": None, "asr_text": None, "spatial_boxes": None,
+        }
     return {
         "text": a["text"],
         "must_have_labels": a.get("must_have_labels"),
         "min_count": a.get("min_count"),
         "ocr_text": a.get("ocr_text"),
+        "asr_text": a.get("asr_text"),
         "spatial_boxes": a.get("spatial_boxes"),
     }
 
@@ -224,6 +239,7 @@ def search(
     must_have_labels: list[str] | None = None,
     min_count: dict[str, int] | None = None,
     ocr_text: str | None = None,
+    asr_text: str | None = None,
     spatial_boxes: list[dict] | None = None,
     spatial_op: str = "and",
     ocr_algorithm: str = "flexible",
@@ -238,10 +254,11 @@ def search(
     # (co the them sau, khong phai trong tam lan sua nay).
 ) -> pd.DataFrame:
     """Diem vao chinh Tang 3 tren BO DENSE - thay the hoan toan tier3_temporal.search() (BTC)
-    khi dung bo dense. must_have_labels/min_count/ocr_text/spatial_boxes: filter CHUNG cho MOI
-    anchor (khung ve tay tu canvas AP DUNG DONG LOAT cho tat ca moc, xem docstring dau file) -
-    anchor.must_have_labels/min_count/ocr_text (dict) la filter RIENG cho DUNG moc do, AND them
-    vao filter chung.
+    khi dung bo dense. must_have_labels/min_count/ocr_text/asr_text/spatial_boxes: filter CHUNG
+    cho MOI anchor (khung ve tay tu canvas AP DUNG DONG LOAT cho tat ca moc, xem docstring dau
+    file) - anchor.must_have_labels/min_count/ocr_text/asr_text (dict) la filter RIENG cho DUNG
+    moc do, AND them vao filter chung. asr_text (2026-08-20): xem docstring day du o
+    dense_search.py::search_dense - loc theo loi noi (ASR), khac audio_mentions (soft, tu LLM).
 
     Tra 1 dong/video, cot: video_id, score, anchor{i}_frame_id/pts_time/path."""
     if len(anchors) < 2:
@@ -259,6 +276,7 @@ def search(
             anchor_must_have = list({*(must_have_labels or []), *(a["must_have_labels"] or [])}) or None
             anchor_min_count = {**(min_count or {}), **(a["min_count"] or {})} or None
             anchor_ocr_text = a["ocr_text"] or ocr_text
+            anchor_asr_text = a["asr_text"] or asr_text
             # 2026-08-15: MERGE khung ve tay GLOBAL (thuong None tu app.py, giu de tuong thich
             # nguoc) voi khung RIENG cua moc nay (tu canvas rieng/anchor) - khong loai cai nao.
             anchor_spatial_boxes = [*(spatial_boxes or []), *(a["spatial_boxes"] or [])] or None
@@ -268,7 +286,8 @@ def search(
                     pool = _run_anchor_pool(
                         a["text"], dense_model, k,
                         must_have_labels=anchor_must_have, min_count=anchor_min_count,
-                        ocr_text=anchor_ocr_text, spatial_boxes=anchor_spatial_boxes, spatial_op=spatial_op,
+                        ocr_text=anchor_ocr_text, asr_text=anchor_asr_text,
+                        spatial_boxes=anchor_spatial_boxes, spatial_op=spatial_op,
                         ocr_algorithm=ocr_algorithm, score_algorithm=score_algorithm,
                         distill_model=distill_model, log=log,
                     )
@@ -277,7 +296,8 @@ def search(
                 pool = _run_anchor_pool(
                     a["text"], dense_model, k,
                     must_have_labels=anchor_must_have, min_count=anchor_min_count,
-                    ocr_text=anchor_ocr_text, spatial_boxes=anchor_spatial_boxes, spatial_op=spatial_op,
+                    ocr_text=anchor_ocr_text, asr_text=anchor_asr_text,
+                    spatial_boxes=anchor_spatial_boxes, spatial_op=spatial_op,
                     distill_model=distill_model,
                     ocr_algorithm=ocr_algorithm, score_algorithm=score_algorithm, log=None,
                 )
@@ -332,7 +352,7 @@ def search(
     #       diem CAO HON, THAY THE dong cu bang dong moi (nang cap), khong chi bo qua no.
     n_level1_backfill = len(backfill_video_ids)
     if len(joined) < top_k or n_level1_backfill > 0:
-        widen_k = coarse_k * 20
+        widen_k = coarse_k * WIDEN_POOL_FACTOR
         with (log.timed(f"Tầng 3 — anchor-chain — bù/nâng cấp (mở rộng pool lên {widen_k}/mốc)") if log else contextlib.nullcontext(lambda *_a, **_k: None)) as set_detail:
             wide_pools = _build_pools(widen_k, step_label="Tầng 3 — pool mở rộng (backfill) cho")
             joined_wide = _temporal_join(wide_pools, fps_map, aggregate=aggregate, max_gap_seconds=float("inf"))

@@ -21,9 +21,12 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
+import openai
+import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from app_flags import NIM_TIMEOUT_SECONDS, NIMTimeoutError
 from label_translate import find_known_terms
 
 load_dotenv()
@@ -44,10 +47,29 @@ DISTILL_MODEL = "meta/llama-3.1-8b-instruct"  # dung lai dung model da chon cho 
 # Model KHONG dung duoc qua endpoint completions don gian nay (loi AttributeError vi tra ve
 # content=None - co the do dinh dang "reasoning" rieng, chua ho tro): nvidia/llama-3.3-
 # nemotron-super-49b-v1.5, openai/gpt-oss-120b - DA LOAI khoi danh sach.
+# 2026-08-20 (theo yeu cau nguoi dung, sau khi phat hien NIM co the treo/het credit khong bao
+# truoc: "mình muốn bạn thêm 1 option model gemma gọi từ google api key") - THEM 1 PROVIDER
+# KHAC HAN NIM lam DU PHONG (khong phu thuoc CUNG 1 diem loi voi cac model NIM o tren) - Gemma
+# qua Google AI (Gemini API), dung DUNG endpoint OpenAI-compatible chinh thuc cua Google
+# (https://ai.google.dev/gemini-api/docs/openai) nen tai dung NGUYEN client `openai.OpenAI`,
+# khong can them thu vien/pattern rieng. Can bien moi truong GOOGLE_API_KEY (lay tai
+# https://aistudio.google.com/apikey) - KHAC NVIDIA_NIM_API_KEY, 2 chia khoa doc lap.
+# 2026-08-20 (sua tiep, phat hien qua bug that cua nguoi dung: "sao lai chung cat ve tieng Viet
+# vay" - "gemma-3-27b-it" KHONG con ton tai qua API nay (404), va dieu TE HON: endpoint OpenAI-
+# compat cua Google (v1beta/openai/) tra ve 404 "page not found" (khong phai loi JSON binh
+# thuong) cho ca 2 model Gemma 4 hien co (models.list() xac nhan CO ton tai va ho tro
+# generateContent qua REST GOC) - endpoint OpenAI-compat co ve CHUA ho tro dong Gemma 4 moi nay.
+# -> BO client openai.OpenAI cho nhanh Google, GOI THANG REST generateContent goc (xem
+# _call_gemma() ben duoi) - da test song: tra ve dung noi dung, khong loi.
+GOOGLE_MODELS: dict[str, str] = {
+    "gemma-4-31b-it": "Gemma 4 31B (qua Google AI — DỰ PHÒNG khi NIM lỗi/hết credit, cần GOOGLE_API_KEY riêng)",
+}
+
 DISTILL_MODELS: dict[str, str] = {
     "meta/llama-3.1-8b-instruct": "LLaMA 3.1 8B (mặc định — nhỏ nhất, nhanh nhất)",
     "meta/llama-3.1-70b-instruct": "LLaMA 3.1 70B (giữ đúng chi tiết hơn khi test)",
     "meta/llama-3.3-70b-instruct": "LLaMA 3.3 70B (bản mới nhất, giữ đúng chi tiết hơn)",
+    **GOOGLE_MODELS,
 }
 DEFAULT_DISTILL_MODEL = DISTILL_MODEL
 
@@ -57,8 +79,51 @@ _nim_client: OpenAI | None = None
 def _client() -> OpenAI:
     global _nim_client
     if _nim_client is None:
-        _nim_client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=os.environ["NVIDIA_NIM_API_KEY"])
+        # timeout=NIM_TIMEOUT_SECONDS (2026-08-20, theo yeu cau nguoi dung - xem app_flags.py):
+        # TRUOC DAY khong dat timeout -> request "cho mai" tren httpx mac dinh, treo VO HAN khi
+        # NIM khong phan hoi (do that: >30s khong tra ve gi, khong loi khong ket qua).
+        _nim_client = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=os.environ["NVIDIA_NIM_API_KEY"],
+            timeout=NIM_TIMEOUT_SECONDS,
+        )
     return _nim_client
+
+
+def _google_api_key() -> str:
+    if "GOOGLE_API_KEY" not in os.environ:
+        raise RuntimeError(
+            "Thiếu GOOGLE_API_KEY trong .env — lấy tại https://aistudio.google.com/apikey "
+            "rồi thêm dòng GOOGLE_API_KEY=... để dùng model Gemma (dự phòng khi NIM lỗi)."
+        )
+    return os.environ["GOOGLE_API_KEY"]
+
+
+def _call_gemma(model: str, system_prompt: str, user_content: str) -> str:
+    """Goi REST generateContent GOC cua Google (KHONG qua endpoint OpenAI-compat - xem ghi chu
+    o GOOGLE_MODELS o tren ve ly do). Gemma 4 la model "thinking" - candidates[0].content.parts
+    tra ve NHIEU phan, phan co "thought": True la qua trinh suy luan noi bo (dai, khong phai cau
+    tra loi), phan CUOI CUNG khong co "thought" moi la cau tra loi that su - phai loc rieng."""
+    import requests
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        f"?key={_google_api_key()}"
+    )
+    body = {
+        "contents": [{"parts": [{"text": f"{system_prompt}\n\n{user_content}"}]}],
+        # maxOutputTokens du RONG hon NIM (80) vi Gemma 4 luon tieu ton token cho phan "thought"
+        # truoc khi ra cau tra loi that su (do that: ~290 token thought cho 1 cau ngan).
+        "generationConfig": {"maxOutputTokens": 600},
+    }
+    resp = requests.post(url, json=body, timeout=NIM_TIMEOUT_SECONDS)
+    resp.raise_for_status()
+    data = resp.json()
+    parts = data["candidates"][0]["content"]["parts"]
+    answer_parts = [p["text"] for p in parts if not p.get("thought") and "text" in p]
+    if not answer_parts:
+        raise RuntimeError(f"Gemma ({model}) chỉ trả về phần 'thought', không có câu trả lời.")
+    return answer_parts[-1].strip()
 
 
 SYSTEM_PROMPT = """You translate a Vietnamese video-search query into a SHORT English caption
@@ -203,18 +268,31 @@ def distill_query(query_vi: str, model: str = DEFAULT_DISTILL_MODEL) -> str:
         user_content += f"\n\nKnown glossary: {glossary_str}"
 
     try:
-        resp = _client().chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            max_tokens=80,
-            temperature=0.0,
-        )
-        content = resp.choices[0].message.content.strip()
+        if model in GOOGLE_MODELS:
+            content = _call_gemma(model, SYSTEM_PROMPT, user_content)
+        else:
+            resp = _client().chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=80,
+                temperature=0.0,
+            )
+            content = resp.choices[0].message.content.strip()
         content = content.removeprefix("```").removesuffix("```").strip().strip('"')
         return content or query_vi
+    except openai.APITimeoutError as e:
+        # 2026-08-20 (theo yeu cau nguoi dung) - KHAC voi except Exception rong duoi day (fallback
+        # IM LANG ve cau goc, chap nhan duoc cho loi dinh dang nho): timeout la dau hieu NGHIEM
+        # TRONG (NIM co the het credit/loi dich vu) - PHAI RAISE ro rang de UI (app.py) hien loi,
+        # khong duoc fallback im lang (nguoi dung se khong biet NIM dang co van de).
+        raise NIMTimeoutError(f"chưng cất query, model={model}") from e
+    except requests.exceptions.Timeout as e:
+        # timeout rieng cho nhanh Gemma (requests, khong phai openai.APITimeoutError) - CUNG
+        # ban chat nghiem trong nhu tren, tai dung NIMTimeoutError (chi khac ten "context").
+        raise NIMTimeoutError(f"chưng cất query, model={model} (Google API)") from e
     except Exception:
         return query_vi
 

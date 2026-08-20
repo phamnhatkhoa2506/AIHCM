@@ -49,6 +49,15 @@ BEIT3_MAX_TEXT_LEN = 64
     timeout=120,
     volumes={"/root/.cache/huggingface": hf_cache_vol},
 )
+# 2026-08-20 (theo yeu cau nguoi dung, phat hien qua bug that: "chạy nhiều lần cho hết cold-
+# start nhưng vẫn chiếm nhiều thời gian" - pe_core 6.15s dù goi rieng le CHI ~0.8-1.8s) - MAC
+# DINH 1 container Modal CHI xu ly 1 request/lan (input tiep theo phai XEP HANG cho xong cai
+# truoc), dù code local goi .remote() "song song" qua ThreadPoolExecutor (_rank_rrf trong
+# dense_search.py) - 2 model (siglip/pe_core) CUNG goi vao 1 container QueryEncoder nay, request
+# thu 2 luon phai doi request dau xong -> "song song" tren code nhung TUAN TU tren server that.
+# @modal.concurrent cho phep 1 container nhan NHIEU request dong thoi that su (an toan: ca 3 ham
+# encode_*_text deu CHI DOC self._model, khong ghi/doi state gi giua cac call).
+@modal.concurrent(max_inputs=8)
 class QueryEncoder:
     @modal.enter()
     def load(self):
