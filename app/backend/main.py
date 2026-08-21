@@ -14,6 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -72,12 +73,24 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 def _row_to_result(row, thumb_path: str, answer_text: str | None = None) -> SearchResultRow:
+    # 2026-08-21 (theo yêu cầu người dùng: "bôi màu chữ khớp trong câu ASR") - asr_match_start/end
+    # đi qua 1 cột int|None trong DataFrame (dense_search.py::_annotate_asr_match) - pandas ÉP
+    # cột lên float64 (NaN cho None) nếu CÓ ÍT NHẤT 1 dòng int lẫn 1 dòng None trong CÙNG cột
+    # (cột int thuần không chứa được None) - `pd.isna()` bắt được CẢ 2 dạng (None object-dtype
+    # LẪN NaN float-dtype), .get(..) mặc định None phòng khi cột chưa tồn tại (vd đường TRAKE
+    # không đi qua _annotate_asr_match, "asr_match_text" not in row).
+    asr_match_text = row.get("asr_match_text")
+    asr_match_start = row.get("asr_match_start")
+    asr_match_end = row.get("asr_match_end")
     return SearchResultRow(
         video_id=row["video_id"],
         frame_id=int(row["frame_id"]) if "frame_id" in row else None,
         score=float(row["score"]) if "score" in row and row["score"] is not None else None,
         thumb_url=f"/api/thumb?path={thumb_path}",
         answer_text=answer_text,
+        asr_match_text=None if pd.isna(asr_match_text) else str(asr_match_text),
+        asr_match_start=None if pd.isna(asr_match_start) else int(asr_match_start),
+        asr_match_end=None if pd.isna(asr_match_end) else int(asr_match_end),
     )
 
 

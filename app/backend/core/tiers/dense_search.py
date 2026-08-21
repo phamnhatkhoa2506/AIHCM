@@ -740,6 +740,82 @@ def _frame_idx_by_video() -> dict[str, np.ndarray]:
     return out
 
 
+def _asr_match_index(asr_text: str) -> dict[tuple[str, int], tuple[str, int, int]]:
+    """Nhu _asr_candidates() (xem docstring cu duoi day de biet day du logic loc/fallback frame
+    thua mau) nhung tra CA NOI DUNG cau khop, khong chi tap (video_id, frame_idx) - dung cho tinh
+    nang "bôi màu chữ khớp trong câu ASR" tren UI (2026-08-21, theo yeu cau nguoi dung: "mình
+    không biết cụ thể nội dung toàn câu nó được đề cập là như thế nào... chữ được khớp sẽ được
+    bôi màu trong câu tương ứng").
+
+    Tra ve dict (video_id, frame_idx) -> (text_raw, match_start, match_end) - match_start/end la
+    OFFSET KY TU trong CHINH text_raw (khong phai text_norm) cua doan khop, de frontend cat chuoi
+    to dam dung cho ky tu CO DAU/HOA-THUONG goc, khong phai ban da chuan hoa. AN TOAN vi
+    text_norm/text_raw CANH KHOP 1-1 THEO VI TRI KY TU (da kiem chung that: _strip_accents() chi
+    ha thuong + go dau/thay 'đ'->'d', KHONG bao gio doi SO LUONG ky tu) - offset tim duoc trong
+    text_norm dung THANG duoc cho text_raw, khong can tinh lai.
+
+    1 (video_id, frame_idx) co the khop NHIEU doan ASR khac nhau (video dai, noi lai cum tu do
+    nhieu lan) - GIU doan XUAT HIEN SAU trong file (ghi de) cho don gian, khong quan trong doan
+    nao trong da so truong hop (chi de hien thi tham khao, khong anh huong ket qua loc)."""
+    asr = _load_dense_asr()
+    if asr is None or asr.empty:
+        return {}
+    needle = _strip_accents(asr_text)
+    if not needle:
+        return {}
+    hit = asr[asr["text_norm"].str.contains(needle, regex=False, na=False)]
+    if hit.empty:
+        return {}
+
+    frame_idx_by_video = _frame_idx_by_video()
+    out: dict[tuple[str, int], tuple[str, int, int]] = {}
+    for row in hit.itertuples(index=False):
+        frames = frame_idx_by_video.get(row.video_id)
+        if frames is None or len(frames) == 0:
+            continue
+        start = row.text_norm.find(needle)  # luon >=0 vi da .str.contains() loc truoc
+        match = (row.text_raw, start, start + len(needle))
+        lo = int(np.searchsorted(frames, row.frame_idx_start, side="left"))
+        hi = int(np.searchsorted(frames, row.frame_idx_end, side="right"))
+        if lo < hi:
+            for f in frames[lo:hi]:
+                out[(row.video_id, int(f))] = match
+            continue
+        # khong co frame nao nam CHAT trong khoang - fallback ve frame GAN NHAT (truoc/sau) -
+        # xem docstring _asr_candidates() ben duoi cho ly do day du (BUG THAT "sân bay quốc tế").
+        mid = (row.frame_idx_start + row.frame_idx_end) / 2
+        cand_positions = [p for p in (lo - 1, lo) if 0 <= p < len(frames)]
+        if not cand_positions:
+            continue
+        best_pos = min(cand_positions, key=lambda p: abs(frames[p] - mid))
+        out[(row.video_id, int(frames[best_pos]))] = match
+    return out
+
+
+def _annotate_asr_match(result: pd.DataFrame, asr_text: str | None) -> pd.DataFrame:
+    """Gắn 3 cột asr_match_text/asr_match_start/asr_match_end (None nếu không áp dụng) vào
+    `result` - dùng cho tính năng "bôi màu chữ khớp trong câu ASR" trên UI (xem docstring
+    _asr_match_index()). Gọi ở CẢ 2 điểm return của search_dense() (nhánh query rỗng lẫn nhánh
+    thường) - KHÔNG gắn gì nếu asr_text rỗng (không lọc ASR) hoặc result rỗng (không có gì để
+    gắn)."""
+    if not asr_text or not asr_text.strip() or result.empty:
+        result["asr_match_text"] = None
+        result["asr_match_start"] = None
+        result["asr_match_end"] = None
+        return result
+    match_index = _asr_match_index(asr_text)
+    texts, starts, ends = [], [], []
+    for vid, fid in zip(result["video_id"], result["frame_id"]):
+        m = match_index.get((vid, int(fid)))
+        texts.append(m[0] if m else None)
+        starts.append(m[1] if m else None)
+        ends.append(m[2] if m else None)
+    result["asr_match_text"] = texts
+    result["asr_match_start"] = starts
+    result["asr_match_end"] = ends
+    return result
+
+
 def _asr_candidates(asr_text: str) -> set[tuple[str, int]] | None:
     """Tra ve set (video_id, frame_idx) - CAC FRAME DENSE nam trong khoang thoi gian cua 1 doan
     ASR co text_norm KHOP asr_text (ordered-substring, giong _audio_mention_boost) - None neu
@@ -748,56 +824,26 @@ def _asr_candidates(asr_text: str) -> set[tuple[str, int]] | None:
     Khac OCR (khop TUNG FRAME rieng le): 1 doan ASR trai dai NHIEU frame (frame_idx_start..end)
     - MOI frame dense nam trong khoang do deu la ung vien hop le (nguoi noi cau do trong luc
     canh nao dang chieu tren man hinh, khong the biet CHINH XAC frame nao - giu CA khoang, giong
-    nguyen tac ASR_CONTEXT_WINDOW_SECONDS cua soft-boost)."""
+    nguyen tac ASR_CONTEXT_WINDOW_SECONDS cua soft-boost).
+
+    2026-08-21: giu NGUYEN interface cu (chi tra set, khong tra noi dung) - BOC quanh
+    _asr_match_index() (gio la nguon logic DUY NHAT, tranh 2 noi cung 1 thuat toan loc+fallback
+    frame thua mau de sua sot) - .keys() cho DUNG y het tap cu.
+
+    BUG THAT (2026-08-20, nguoi dung phat hien qua case that: "sân bay quốc tế" that su co
+    trong L25_V042 - text_norm khop 100% - nhung loc ra KHONG co video nay): dense corpus lay
+    mau THUA (~0.55-2.65s/frame TRUNG BINH, nhung co video/doan cu the THUA HON NHIEU o cac
+    canh tinh/shot dai) - do that CHINH XAC case nay: 2 frame dense gan nhat cua L25_V042
+    cach nhau toi 1440 frame (~57.6s o 25fps), trong khi doan ASR khop chi dai ~10s (frame_idx
+    32068-32312) - KHONG CO frame dense nao roi dung vao khoang do -> match THAT SU nhung tra
+    ve 0 frame, "bien mat" khoi ket qua ma khong co dau hieu gi. Fix: neu KHONG co frame nao
+    nam CHAT trong [start,end], fallback ve frame dense GAN NHAT (truoc hoac sau, tuy cai nao
+    gan hon) - giong nguyen tac get_shot_frame_range() da lam (video/doan khong co frame dung
+    khop -> lay gan nhat, con hon KHONG co gi) - dam bao 1 doan ASR khop CHU KHONG BAO GIO
+    "bien mat" hoan toan chi vi lay mau thua."""
     if not asr_text or not asr_text.strip():
         return None
-    asr = _load_dense_asr()
-    if asr is None or asr.empty:
-        return set()
-
-    # 2026-08-20 (toi uu, do that qua benchmark: ban dau dung .apply(lambda...) - quet 47,585
-    # dong BANG PYTHON LOOP moi lan goi (KHONG cache o day, khac OCR) - ton ~2s/query, se cong
-    # don vao MOI lan search dung ASR filter. Fix: `text_norm` da SAN accent-stripped+lowercase
-    # tu build_dense_asr_index.py (kiem tra that: text_norm == strip_accents(text_norm)) - dung
-    # THANG `.str.contains()` (vectorized, C-level trong pandas) thay vi .apply(lambda) - do
-    # that: ~0.05s/query (~40 lan nhanh hon). KHONG can _strip_accents(t) rieng cho tung dong
-    # nua vi da chuan hoa san.
-    needle = _strip_accents(asr_text)
-    hit = asr[asr["text_norm"].str.contains(needle, regex=False, na=False)]
-    if hit.empty:
-        return set()
-
-    # BUG THAT (2026-08-20, nguoi dung phat hien qua case that: "sân bay quốc tế" that su co
-    # trong L25_V042 - text_norm khop 100% - nhung loc ra KHONG co video nay): dense corpus lay
-    # mau THUA (~0.55-2.65s/frame TRUNG BINH, nhung co video/doan cu the THUA HON NHIEU o cac
-    # canh tinh/shot dai) - do that CHINH XAC case nay: 2 frame dense gan nhat cua L25_V042
-    # cach nhau toi 1440 frame (~57.6s o 25fps), trong khi doan ASR khop chi dai ~10s (frame_idx
-    # 32068-32312) - KHONG CO frame dense nao roi dung vao khoang do -> match THAT SU nhung tra
-    # ve 0 frame, "bien mat" khoi ket qua ma khong co dau hieu gi. Fix: neu KHONG co frame nao
-    # nam CHAT trong [start,end], fallback ve frame dense GAN NHAT (truoc hoac sau, tuy cai nao
-    # gan hon) - giong nguyen tac get_shot_frame_range() da lam (video/doan khong co frame dung
-    # khop -> lay gan nhat, con hon KHONG co gi) - dam bao 1 doan ASR khop CHU KHONG BAO GIO
-    # "bien mat" hoan toan chi vi lay mau thua.
-    frame_idx_by_video = _frame_idx_by_video()
-    candidates: set[tuple[str, int]] = set()
-    for row in hit.itertuples(index=False):
-        frames = frame_idx_by_video.get(row.video_id)
-        if frames is None or len(frames) == 0:
-            continue
-        lo = int(np.searchsorted(frames, row.frame_idx_start, side="left"))
-        hi = int(np.searchsorted(frames, row.frame_idx_end, side="right"))
-        if lo < hi:
-            for f in frames[lo:hi]:
-                candidates.add((row.video_id, int(f)))
-            continue
-        # khong co frame nao nam CHAT trong khoang - fallback ve frame GAN NHAT (truoc/sau).
-        mid = (row.frame_idx_start + row.frame_idx_end) / 2
-        cand_positions = [p for p in (lo - 1, lo) if 0 <= p < len(frames)]
-        if not cand_positions:
-            continue
-        best_pos = min(cand_positions, key=lambda p: abs(frames[p] - mid))
-        candidates.add((row.video_id, int(frames[best_pos])))
-    return candidates
+    return set(_asr_match_index(asr_text).keys())
 
 
 @lru_cache(maxsize=1)
@@ -1575,7 +1621,7 @@ def search_dense(
         else:
             result = _filter_only_result(candidates, top_k)
         result["is_backfill"] = False
-        return result
+        return _annotate_asr_match(result, asr_text)
 
     # 2026-08-15 (theo yeu cau nguoi dung): chung cat/dich query 1 LAN duy nhat truoc khi encode
     # - dung CHUNG cho ca 3 model (siglip/pe_core/beit3) thay vi tung model tu dich rieng. Xem
@@ -1684,4 +1730,4 @@ def search_dense(
                            f"{len(backfill_rows)} kết quả bằng CLIP thuần (BỎ QUA lọc cứng) cho đủ "
                            f"{top_k}, đánh dấu ở cột is_backfill")
 
-    return result
+    return _annotate_asr_match(result, asr_text)

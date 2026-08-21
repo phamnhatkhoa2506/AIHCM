@@ -81,6 +81,14 @@ class SearchResultRow(BaseModel):
     thumb_urls: list[str] | None = None
     pts_times: list[float] | None = None  # trake/temporal: giây trong video gốc, 1 phần tử/mốc (cho timeline)
     answer_text: str | None = None      # qa: chỉ có giá trị nếu use_lvlm=True (xem SearchRequest)
+    # 2026-08-21 (theo yêu cầu người dùng: "khi lọc bằng ASR... không biết cụ thể nội dung toàn
+    # câu... chữ được khớp sẽ được bôi màu trong câu tương ứng") - CHỈ có giá trị khi filters.
+    # asr_text đang lọc VÀ frame này thật sự khớp 1 đoạn ASR (xem dense_search.py::
+    # _annotate_asr_match) - asr_match_start/end là OFFSET KÝ TỰ trong asr_match_text để frontend
+    # tô đậm đúng đoạn khớp, không phải tô cả câu.
+    asr_match_text: str | None = None
+    asr_match_start: int | None = None
+    asr_match_end: int | None = None
 
 
 class SearchResponse(BaseModel):

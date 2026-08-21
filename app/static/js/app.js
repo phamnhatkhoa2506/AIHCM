@@ -557,6 +557,22 @@ function renderResults(rows, resultMode) {
   });
 }
 
+// 2026-08-21 (theo yêu cầu người dùng: "khi lọc bằng ASR... không biết cụ thể nội dung toàn
+// câu... chữ được khớp sẽ được bôi màu trong câu tương ứng") - backend đã trả sẵn asr_match_text
+// (nguyên câu ASR, CÓ dấu/hoa-thường gốc) + asr_match_start/end (offset KÝ TỰ của đoạn khớp
+// trong CHÍNH câu đó, xem dense_search.py::_annotate_asr_match) - chỉ cần CẮT CHUỖI + escapeHtml
+// từng đoạn rồi bọc <mark> cho đoạn giữa, không cần tự dò lại vị trí khớp ở frontend (tránh lệch
+// logic accent-strip giữa Python/JS). Rỗng ("") nếu row không có asr_match_text (không lọc ASR,
+// hoặc mode TRAKE/Temporal - tính năng này hiện CHỈ áp dụng KIS/QA, xem ghi chú backend).
+function asrMatchBlock(row) {
+  if (!row.asr_match_text) return "";
+  const t = row.asr_match_text;
+  const s = row.asr_match_start ?? 0;
+  const e = row.asr_match_end ?? 0;
+  return `<div class="asr-match"><i class="bi bi-mic-fill"></i> `
+    + `${escapeHtml(t.slice(0, s))}<mark>${escapeHtml(t.slice(s, e))}</mark>${escapeHtml(t.slice(e))}</div>`;
+}
+
 function renderSingleCard(row, i, resultMode) {
   const wrap = document.createElement("div");
   wrap.className = "card-wrap";
@@ -570,6 +586,7 @@ function renderSingleCard(row, i, resultMode) {
         <span>${row.video_id} · ${frameLabel}</span>
         ${row.score != null ? `<span class="score">${row.score.toFixed(3)}</span>` : ""}
       </div>
+      ${asrMatchBlock(row)}
       <div class="actions">
         <button class="btn icon-btn add-btn" data-tooltip="Nộp"><i class="bi bi-send-fill"></i></button>
         ${row.frame_id != null ? `<button class="btn icon-btn shot-btn" data-tooltip="Xem shot"><i class="bi bi-camera-reels-fill"></i></button>` : ""}

@@ -317,6 +317,20 @@ input[type="date"] { padding-right: 6px; }
 .chain-footer .btn { flex: 1 1 0; }
 .card .meta { padding: 6px 8px; font-size: 11px; color: var(--fg-muted); display: flex; justify-content: space-between; gap: 4px; }
 .card .meta .score { font-variant-numeric: tabular-nums; }
+
+/* 2026-08-21 (theo yêu cầu người dùng: "khi lọc bằng ASR... chữ được khớp sẽ được bôi màu trong
+   câu tương ứng để người dùng dễ dùng") - hiện NGUYÊN câu ASR khớp ngay dưới mỗi card, đoạn
+   khớp bôi màu bằng <mark> (không dùng nền vàng mặc định của trình duyệt - lệch tông với theme
+   tối/sáng của app, dùng màu accent sẵn có cho nhất quán). */
+.asr-match {
+  padding: 6px 8px; font-size: 10.5px; line-height: 1.5; color: var(--fg-muted);
+  border-top: 1px dashed var(--border); background: var(--bg);
+}
+.asr-match .bi { color: var(--fg-muted); margin-right: 2px; }
+.asr-match mark {
+  background: var(--accent-soft); color: var(--accent); font-weight: 700;
+  padding: 0 2px; border-radius: 3px;
+}
 .qa-answer-input { margin: 0 8px 8px; width: calc(100% - 16px); font-size: 11.5px; padding: 6px 8px; }
 .card .actions { display: flex; gap: 4px; padding: 0 8px 8px; }
 .card .actions .btn { flex: 1; padding: 7px 6px; font-size: 15px; }
