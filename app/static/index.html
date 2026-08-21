@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="vi">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AIC 2026</title>
+  <link rel="stylesheet" href="/static/css/theme.css" />
+  <link rel="stylesheet" href="/static/css/layout.css" />
+</head>
+
+<body>
+  <div class="app-shell">
+
+    <aside id="sidebar">
+      <button id="theme-toggle" class="icon-btn" data-tooltip="Đổi giao diện sáng/tối">🌙</button>
+
+      <div>
+        <h1>AIC 2026</h1>
+      </div>
+
+      <div class="field-group">
+        <label class="group-label">Chế độ</label>
+        <div class="seg-control" id="mode-control">
+          <button data-mode="kis" class="active">KIS</button>
+          <button data-mode="temporal">Temporal</button>
+          <button data-mode="trake">TRAKE</button>
+          <button data-mode="qa">Q&amp;A</button>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="group-label">Mô Hình</label>
+        <select id="dense-model">
+          <option value="siglip" selected>SigLIP2</option>
+          <option value="pe_core">PE-Core</option>
+          <option value="beit3">BEiT-3</option>
+          <option value="rrf">Tất cả (RRF)</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label class="group-label">Bộ lọc</label>
+        <input type="text" id="f-keywords" placeholder="Tags, tên kênh" />
+        <div class="row-2">
+          <div class="date-field">
+            <span class="date-label">Từ ngày</span>
+            <input type="date" id="f-date-from" />
+          </div>
+          <div class="date-field">
+            <span class="date-label">Đến ngày</span>
+            <input type="date" id="f-date-to" />
+          </div>
+        </div>
+        <input type="text" id="f-video-ids" placeholder="video_id (L21_V001, ...)" />
+        <input type="text" id="f-ocr" placeholder="Chữ (OCR)" />
+        <input type="text" id="f-asr" placeholder="Lời thoại (ASR)" />
+      </div>
+
+      <div class="field-group">
+        <label class="group-label">Model chưng cất query (dịch + rút gọn)</label>
+        <select id="distill-model">
+          <option value="meta/llama-3.1-8b-instruct" selected>LLaMA 3.1 8B (mặc định)</option>
+          <option value="meta/llama-3.1-70b-instruct">LLaMA 3.1 70B</option>
+          <option value="meta/llama-3.3-70b-instruct">LLaMA 3.3 70B</option>
+          <option value="gemma-4-31b-it">Gemma 4 31B</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label class="group-label">Tuỳ chọn nâng cao</label>
+        <label class="checkbox-row"><input type="checkbox" id="opt-llm-entity" /> Dùng LLM phân rã câu
+          (hard-filter)</label>
+        <label class="checkbox-row"><input type="checkbox" id="opt-region-clip" /> Region-CLIP rerank</label>
+        <label class="checkbox-row"><input type="checkbox" id="opt-multi-clause" /> Tách câu thành từng mệnh
+          đề, xếp hạng riêng rồi lấy điểm cao nhất</label>
+        <select id="ocr-algorithm">
+          <option value="flexible" selected>OCR: Đơn giản (mặc định)</option>
+          <option value="rapidfuzz">OCR: RapidFuzz (chịu lỗi ký tự)</option>
+          <option value="rapidfuzz_token">OCR: RapidFuzz theo token</option>
+          <option value="alignment">OCR: Sequence Alignment</option>
+        </select>
+        <select id="score-algorithm">
+          <option value="cosine" selected>Điểm: Cosine (mặc định)</option>
+          <option value="sigmoid">Điểm: Sigmoid hiệu chỉnh (SigLIP2)</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label class="group-label">Model VLM (đọc chữ / trả lời Q&amp;A)</label>
+        <select id="vlm-ocr-model">
+          <option value="nvidia/llama-3.1-nemotron-nano-vl-8b-v1" selected>Nemotron Nano VL 8B (mặc định)</option>
+          <option value="meta/llama-3.2-11b-vision-instruct">Llama 3.2 11B Vision</option>
+          <option value="nvidia/nemotron-nano-12b-v2-vl">Nemotron Nano 12B v2 VL</option>
+        </select>
+        <p class="field-note">Dùng chung cho nút "🔍 VLM Verify" (đọc lại chữ khi nghi ngờ OCR bỏ sót/đọc sai) VÀ
+          "Dùng LVLM tự động trả lời" ở chế độ Q&amp;A.</p>
+      </div>
+
+      <div class="field-group">
+        <label class="group-label">Top-K: <span id="topk-val">100</span></label>
+        <div class="slider-row">
+          <input type="range" id="top-k" min="10" max="500" step="10" value="100" />
+        </div>
+      </div>
+
+      <div id="sidebar-resize" title="Kéo để chỉnh độ rộng"></div>
+    </aside>
+
+    <button id="sidebar-toggle" title="Đóng/mở sidebar">‹</button>
+
+    <main id="main">
+      <div id="topbar">
+        <input type="text" id="query-input" placeholder="Nhập truy vấn" />
+        <div id="qa-box" class="hidden">
+          <div class="qa-field">
+            <label class="qa-label">Mô tả sự kiện</label>
+            <input type="text" id="qa-event" placeholder="vd: một người đang nấu ăn với chảo và thìa" />
+          </div>
+          <div class="qa-field">
+            <label class="qa-label">Câu hỏi</label>
+            <input type="text" id="qa-question" placeholder="vd: người trong ảnh đang cầm vật gì?" disabled />
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="qa-use-lvlm" />
+            Dùng LVLM tự động trả lời (tốn phí/lần gọi API — mặc định TẮT, tự gõ đáp án trong Playback)
+          </label>
+          <div class="qa-field">
+            <label class="qa-label">Số ứng viên đầu gọi VQA thật (tốn phí/lần)</label>
+            <div class="qa-stepper">
+              <input type="number" id="qa-vqa-top-n" min="1" max="20" step="1" value="3" disabled />
+              <button type="button" class="btn subtle" id="qa-vqa-minus" disabled>−</button>
+              <button type="button" class="btn subtle" id="qa-vqa-plus" disabled>+</button>
+            </div>
+          </div>
+        </div>
+        <div id="max-gap-box" class="hidden">
+          <label class="qa-label">Khoảng cách tối đa giữa 2 mốc liên tiếp (giây)
+            <span
+              title="RÀNG BUỘC CỨNG (không phải phạt điểm) — mốc sau PHẢI cách mốc trước không quá N giây, nếu không sẽ bị loại hẳn khỏi xét dù điểm khớp cao. Đặt QUÁ THẤP có thể loại oan chuỗi mốc đúng; đặt QUÁ CAO dễ ghép nhầm các đoạn không liên quan. Mặc định 25s.">ⓘ</span></label>
+          <div class="slider-row">
+            <input type="range" id="max-gap" min="1" max="120" step="1" value="30" />
+            <output id="max-gap-val">25.00</output>
+          </div>
+        </div>
+        <button id="search-btn" class="btn primary">🔍 Tìm kiếm</button>
+      </div>
+
+      <!-- Quan hệ AND/OR — dùng CHUNG cho MỌI canvas (toàn cục KIS/Q&A lẫn riêng-từng-mốc
+           TRAKE/Temporal), giống hệt v3. Với KIS/Q&A nó nằm GỌN trong panel canvas bên dưới
+           (chỉ có ý nghĩa khi đã vẽ khung); với TRAKE/Temporal vẫn đứng riêng như cũ. -->
+      <div id="spatial-op-row" class="hidden">
+        <span class="qa-label">Quan hệ giữa các khung
+          <span
+            title="Áp dụng cho NỘI DUNG (chữ/nhãn) — AND = frame phải có ĐỦ nội dung mọi khung, OR = chỉ cần khớp 1 khung bất kỳ. Vị trí vẽ chỉ cộng thêm điểm, không lọc cứng.">ⓘ</span></span>
+        <label class="canvas-radio"><input type="radio" name="spatial-op" value="and" checked /> AND</label>
+        <label class="canvas-radio"><input type="radio" name="spatial-op" value="or" /> OR</label>
+      </div>
+
+      <!-- Canvas vẽ khung OCR/Object TOÀN CỤC (KIS/Q&A) — giống objects_canvas bên v3, xem
+           static/js/canvas.js. 2026-08-21 (theo yêu cầu người dùng: "KIS và Q&A bị dư 1 khoảng
+           trống làm xấu hệ thống") - canvas là tính năng TUỲ CHỌN, ít dùng, nhưng trước đây LUÔN
+           chiếm nguyên 1 khối cao ~240px và bỏ trống toàn bộ nửa phải màn hình. Giờ gấp gọn mặc
+           định thành 1 thanh mảnh, bung ra khi cần; lúc bung thì canvas nằm trái, cột phải là
+           danh sách khung đã vẽ + AND/OR (tận dụng chiều ngang thay vì bỏ trống). -->
+      <div id="canvas-section" class="hidden">
+        <button type="button" id="canvas-toggle" aria-expanded="false">
+          <span class="ct-caret">▸</span>
+          <span class="ct-title">🎨 Vẽ vùng OCR / Object</span>
+          <span class="ct-sub">tuỳ chọn — khoanh vị trí chữ hoặc vật thể cần tìm trong khung hình</span>
+          <span id="canvas-badge" class="hidden"></span>
+        </button>
+        <div id="canvas-panel" class="hidden">
+          <div id="canvas-global-mount"></div>
+          <aside id="canvas-side">
+            <div id="canvas-side-op"></div>
+            <div id="canvas-box-list"></div>
+          </aside>
+        </div>
+      </div>
+
+      <!-- TRAKE/Temporal — hàng thẻ Mốc cuộn ngang, MỖI mốc có canvas OCR/Object RIÊNG (giống
+           hệt v3: mỗi mốc 1 objects_canvas riêng, xem app.js::renderAnchorCards). -->
+      <div id="anchors-box" class="hidden">
+        <div id="anchors-row"></div>
+        <div class="anchors-actions">
+          <button type="button" id="add-anchor" class="btn subtle">+ Thêm mốc</button>
+          <button type="button" id="reset-anchors" class="btn subtle" title="Xoá hết, quay về 2 mốc trống mặc định">🗑
+            Xoá tất cả các mốc</button>
+        </div>
+      </div>
+
+      <!-- Lọc kết quả ĐÃ tìm được (client-side, không gọi lại search) theo video_id — dùng
+           chung cho mọi mode, xem app.js::filterResults. -->
+      <div id="result-filter-box" class="hidden">
+        <input type="text" id="result-filter" placeholder="🔎 Lọc kết quả theo video_id (vd: L21_V001)" />
+      </div>
+
+      <div id="steplog"></div>
+      <div id="results-bar" class="hidden">
+        <span id="results-count"></span>
+        <button id="autofill-btn" class="btn primary"></button>
+      </div>
+      <div id="results">
+        <div id="empty-state">Nhập câu truy vấn rồi bấm Tìm kiếm.</div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- Video player nổi — phát đúng đoạn SHOT chứa frame (ranh giới lấy từ dense_meta.parquet
+       shot_idx, giống nút "🎬" bên v3) — xem app.js::openShotPlayer -->
+  <div id="video-player" class="hidden">
+    <div class="vp-head">
+      <span id="vp-title"></span>
+      <button id="vp-close" class="btn subtle" title="Đóng video">✕</button>
+    </div>
+    <div id="vp-body">
+      <video id="vp-video" controls autoplay></video>
+    </div>
+  </div>
+
+  <!-- 🎬 Playback — xem/chỉnh frame trước khi nộp (port từ v3 _playback_dialog, xem playback.js) -->
+  <div id="playback-modal" class="hidden">
+    <div class="pb-box">
+      <div class="pb-head">
+        <h2>🎬 Playback — xem/chỉnh frame</h2>
+        <button id="pb-close" class="btn subtle">✕</button>
+      </div>
+      <div id="pb-timeline" class="pb-timeline"></div>
+      <div id="pb-anchor-picker" class="pb-anchor-picker"></div>
+
+      <div class="pb-controls">
+        <div class="pb-nudge-row">
+          <button type="button" id="pb-prev" class="btn subtle">◀ -5</button>
+          <div class="pb-goto-row">
+            <input type="number" id="pb-typed" min="0" step="1" />
+            <button type="button" id="pb-goto" class="btn subtle">➡ Đi tới</button>
+          </div>
+          <button type="button" id="pb-next" class="btn subtle">+5 ▶</button>
+        </div>
+        <div class="slider-row">
+          <input type="range" id="pb-slider" min="0" step="1" />
+          <button type="button" id="pb-revert" class="btn subtle">↩ Frame gốc</button>
+        </div>
+      </div>
+
+      <div class="pb-body">
+        <div class="pb-col-frame">
+          <span class="pb-col-label">🖼️ Frame xem thử</span>
+          <img id="pb-preview" alt="Xem trước frame" />
+          <div id="pb-preview-caption" class="field-note"></div>
+        </div>
+        <div class="pb-col-video">
+          <span class="pb-col-label">🎞️ Video gốc</span>
+          <video id="pb-video" controls></video>
+        </div>
+      </div>
+
+      <div id="pb-confirm-row">
+        <span id="pb-confirm-status"></span>
+        <button type="button" id="pb-confirm" class="btn primary hidden">✅ Xác nhận frame này</button>
+      </div>
+      <div id="pb-history-box">
+        <span class="pb-history-label">Lịch sử frame đã chốt (bấm để quay lại)</span>
+        <div id="pb-history"></div>
+      </div>
+
+      <div id="pb-submit-area"></div>
+    </div>
+  </div>
+
+  <div id="sub-bubble">
+    <button id="sub-pill" class="btn primary">📤 <span id="sub-count">0</span></button>
+    <div id="sub-panel">
+      <div class="sp-title-row">
+        <h2 class="sp-title">📤 Danh sách nộp bài<br />(<span id="sp-count-full">0/100</span>)</h2>
+        <button id="sp-close" class="btn subtle" title="Đóng">✕</button>
+      </div>
+
+      <div class="sp-field">
+        <label class="sp-field-label">Name <span
+            title="Chỉ đổi tên file CSV tải về, không ảnh hưởng danh sách đang lưu">ⓘ</span></label>
+        <input type="text" id="sp-name" placeholder="query-p1-x-kis" />
+      </div>
+
+      <button id="sp-new-query" class="btn sp-new-btn">🆕 Câu hỏi mới (bắt đầu 100 dòng mới)</button>
+
+      <div class="sp-actions">
+        <button class="btn subtle" id="sp-clear">🗑️ Xoá hết</button>
+        <button class="btn subtle" id="sp-csv">⬇️ CSV</button>
+      </div>
+
+      <div id="sp-list"></div>
+    </div>
+  </div>
+
+  <!-- Form nổi nhập câu trả lời Q&A — chỉ hiện khi bấm "Nộp" trên 1 frame cụ thể (KHÔNG hiện
+       sẵn cho mọi frame trong lưới), gõ xong Enter mới thực sự đưa vào danh sách nộp bài. -->
+  <div id="qa-answer-modal" class="hidden">
+    <div class="qam-box">
+      <div class="qam-title" id="qam-title"></div>
+      <input type="text" id="qam-input" placeholder="Nhập câu trả lời rồi bấm Enter để nộp" />
+      <div class="qam-hint">⏎ Enter để nộp · Esc để huỷ</div>
+    </div>
+  </div>
+
+  <!-- Phóng to/thu nhỏ ảnh frame (giống nút mở rộng của st.image bên Streamlit) -->
+  <div id="lightbox" class="hidden">
+    <button id="lightbox-close" title="Đóng (Esc)">✕</button>
+    <img id="lightbox-img" src="" alt="" />
+    <span id="lightbox-hint">Cuộn chuột hoặc bấm để phóng to/thu nhỏ</span>
+  </div>
+
+  <script src="/static/js/canvas.js"></script>
+  <script src="/static/js/playback.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+
+</html>

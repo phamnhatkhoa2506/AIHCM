@@ -1,0 +1,50 @@
+[project]
+name = "aic-app"
+version = "0.1.0"
+description = "FastAPI + HTML/CSS/JS UI cho AIC 2026 — độc lập với v3/ (Streamlit), xem backend/bootstrap.py"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    "jinja2>=3.1",
+    "websockets>=13.0",
+    "pandas",
+    "pyarrow",
+    "python-dotenv",
+    "requests",
+    "openai",
+    "modal",
+    "faiss-cpu",
+    "torch",
+    "sentence-transformers",
+    "opencv-python",
+    # 2026-08-21 (theo yêu cầu người dùng: "bổ sung thư viện nếu chạy local mọi thứ") - rà lại
+    # TOÀN BỘ import trong backend/core so với .venv thật (import trực tiếp CRASH ngay, không
+    # phải suy đoán) - 4 gói dưới đây ĐANG được backend/core import nhưng CHƯA khai báo ở đâu cả.
+    "rapidfuzz",  # tiers/filter.py::match_rapidfuzz(_token) - dropdown "OCR: RapidFuzz" ở sidebar
+    # gọi được NGAY (không qua Modal, không cần AIC_LOCAL_MODELS) - đang crash ModuleNotFoundError
+    # nếu chọn thuật toán này mà chưa cài.
+    "pillow",  # region_clip.py (Region-CLIP rerank cục bộ) - PIL.Image
+    "sentencepiece",  # local_text_encoders.py - tokenizer BEiT-3 (chỉ cần khi AIC_LOCAL_MODELS/
+    # AIC_LOCAL_BEIT3=1)
+    "timm==0.4.12",  # PIN CỨNG Y HỆT v3/requirements-dev.txt - BẮT BUỘC cho torchscale==0.2.0
+    # (BEiT-3), PE-Core cần "timm.layers" (chỉ có ở bản timm MỚI hơn) nên code đã tự shim
+    # "timm.models.layers" -> "timm.layers" (xem local_text_encoders.py::_load_pe_core) - ĐỔI
+    # version này sẽ phá lại đúng xung đột #2 đã ghi trong v3/README.md, đừng bump tuỳ tiện.
+    # ---- PE-Core / BEiT-3 chạy LOCAL (AIC_LOCAL_MODELS=1 hoặc AIC_LOCAL_PE_CORE/BEIT3=1) - các
+    # gói bên dưới KHÔNG được import trực tiếp trong backend/core, mà bởi 2 repo ngoài phải tự
+    # git clone tay (perception_models cho PE-Core, unilm cho BEiT-3 - xem README.md gốc mục
+    # setup) rồi import qua sys.path.insert() - nhưng vẫn cần pip cài SẴN cho code BÊN TRONG 2
+    # repo đó chạy được. Bỏ qua nhóm này nếu không định bật PE-Core/BEiT-3 local. ----
+    "torchvision",
+    "fairscale==0.4.0",  # PIN cứng y hệt v3 - torchscale==0.2.0 yêu cầu đúng bản này
+    "torchscale==0.2.0",  # PIN cứng y hệt v3 - bản PyPI này tự ép timm==0.4.12 trong metadata
+    # (nguồn gốc xung đột #2 ở trên, không phải lựa chọn tuỳ ý)
+    "tensorboardX",
+    "torchmetrics",
+    "einops",
+    "ftfy",
+    "huggingface_hub",
+    "accelerate",
+]

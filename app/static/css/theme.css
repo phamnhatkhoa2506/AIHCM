@@ -1,0 +1,102 @@
+/* Bảng màu: sáng = trắng-đen chủ đạo, tối = xanh-đen (navy) chủ đạo. Cả 2 "dễ nhìn, không quá
+   màu mè" — accent chỉ 1 tông duy nhất, dùng dè xẻn (nút chính, badge trạng thái, viền focus). */
+:root {
+  --bg: #ffffff;
+  --bg-elevated: #f7f7f8;
+  --bg-sidebar: #f2f2f3;
+  --border: #e0e0e2;
+  --fg: #17181a;
+  --fg-muted: #6b6d72;
+  --accent: #2f3b52;      /* xanh đen trầm — dùng cho nút chính/link, không phải màu mè */
+  --accent-fg: #ffffff;
+  --accent-soft: #eef1f6;
+  --ok: #2f7d5a;
+  --warn: #a06a1f;
+  --err: #b3412c;
+  --shadow: 0 4px 20px rgba(20, 20, 24, 0.10);
+  --radius: 10px;
+  --font-ui: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117;
+    --bg-elevated: #131a24;
+    --bg-sidebar: #0f1620;
+    --border: #22303f;
+    --fg: #e6e9ee;
+    --fg-muted: #8b96a3;
+    --accent: #4f7cac;      /* xanh dương trầm trên nền navy-đen */
+    --accent-fg: #0d1117;
+    --accent-soft: #16212f;
+    --ok: #4caf82;
+    --warn: #d9a441;
+    --err: #e0685a;
+    --shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0d1117;
+  --bg-elevated: #131a24;
+  --bg-sidebar: #0f1620;
+  --border: #22303f;
+  --fg: #e6e9ee;
+  --fg-muted: #8b96a3;
+  --accent: #4f7cac;
+  --accent-fg: #0d1117;
+  --accent-soft: #16212f;
+  --ok: #4caf82;
+  --warn: #d9a441;
+  --err: #e0685a;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  /* Sidebar và main tự cuộn RIÊNG bên trong (xem #sidebar/#main trong layout.css) - trang
+     ngoài cùng KHÔNG được cuộn theo, nếu không cả 2 cột bị "dính" cuộn chung làm 1. */
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 14px;
+}
+
+button, input, select, textarea { font-family: inherit; font-size: inherit; }
+
+::selection { background: var(--accent-soft); }
+
+a { color: var(--accent); }
+
+.hidden { display: none !important; }
+
+/* ---- Scrollbar mảnh, bo tròn, hoà theo theme — thay cho thanh cuộn mặc định OS to/thô ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 999px;
+  border: 2px solid var(--bg);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--fg-muted);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

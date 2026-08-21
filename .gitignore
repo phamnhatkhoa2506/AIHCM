@@ -1,0 +1,17 @@
+.claude/
+.vscode/
+data/
+v3/index/
+v3/.cache/
+__pycache__/
+**/.env
+.venv/
+venv/
+**/*.pkl
+**/*.csv
+**/*.jsonl
+# app/
+# pyproject.toml
+requirements-dev.txt
+v3/
+app/.cache
