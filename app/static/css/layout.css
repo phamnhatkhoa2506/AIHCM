@@ -8,8 +8,18 @@
     hơn viewport và TRANG (thay vì từng cột) mới là thứ thật sự cuộn - đây là nguyên nhân "cuộn
     sidebar và layout chính dính vào nhau". */
   height: 100vh;
+  /* 2026-08-21 (theo yêu cầu người dùng: "chuyển động mở đóng sidebar mượt mà hơn") - trước đây
+     đóng/mở CHỈ toggle class .sidebar-collapsed (0px <-> var(--sidebar-w)) không hề có transition
+     -> nhảy khựng tức thì. grid-template-columns ĐỘNG VIÊN được (browser hiện đại nội suy mượt
+     giữa 2 giá trị length khi SỐ LƯỢNG track không đổi - ở đây luôn 2 track) - cách rẻ nhất, không
+     cần JS đo/animate width bằng tay. */
+  transition: grid-template-columns 280ms cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 .app-shell.sidebar-resizing { cursor: col-resize; user-select: none; }
+/* Lúc đang KÉO TAY (mousemove liên tục), applySidebarState() gọi lại rất nhiều lần/giây - giữ
+   transition ở đây sẽ làm sidebar "trễ nhịp" đuổi theo chuột (rubber-band lag), phải TẮT hẳn
+   animation trong lúc kéo, chỉ animate khi bấm nút đóng/mở (đổi state 1 LẦN, không liên tục). */
+.app-shell.sidebar-resizing { transition: none; }
 .app-shell.sidebar-collapsed { grid-template-columns: 0px 1fr; }
 
 /* ---- Sidebar (tương đương sidebar Streamlit: mode + filter + model options, kéo giãn +
@@ -27,8 +37,18 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
+  transition: padding 280ms cubic-bezier(0.25, 0.8, 0.25, 1);
 }
+.app-shell.sidebar-resizing #sidebar { transition: none; } /* đồng bộ với .app-shell - tắt lúc kéo tay */
 .app-shell.sidebar-collapsed #sidebar { padding: 16px 0; border-right: none; }
+
+/* Nội dung sidebar MỜ DẦN theo đúng nhịp đóng/mở (280ms, khớp transition grid-template-columns
+   ở trên) thay vì bị BÓP MÉO/xuống dòng loạn xạ khi cột co hẹp dần rồi biến mất đột ngột lúc
+   min-width:0 chạm - opacity fade cho cảm giác "tan biến" mượt, che luôn phần chữ bị bóp trong
+   lúc cột đang thu hẹp (vẫn có mặt trong DOM, chỉ ẩn thị giác). pointer-events tắt để không bấm
+   nhầm vào nút ẩn lúc đang/đã đóng. */
+#sidebar > * { transition: opacity 160ms ease; }
+.app-shell.sidebar-collapsed #sidebar > * { opacity: 0; pointer-events: none; }
 
 /* Tay kéo giãn — dải mỏng ở mép phải sidebar, hiện khi hover/kéo để không rối mắt lúc bình thường. */
 #sidebar-resize {
@@ -67,8 +87,15 @@
   font-size: 12px;
   box-shadow: var(--shadow);
   padding: 0;
+  /* "left" set qua inline style bằng JS (applySidebarState() - theo đúng mép sidebar, xem
+     app.js) - animate CHÍNH property đó để tab bán nguyệt trượt THEO ĐÚNG NHỊP với mép sidebar
+     đang thu/giãn, không bị "nhảy cóc" tới vị trí mới trước khi sidebar kịp đóng xong. */
+  transition: left 280ms cubic-bezier(0.25, 0.8, 0.25, 1);
 }
+.app-shell.sidebar-resizing #sidebar-toggle { transition: none; } /* tắt lúc kéo tay - lý do y hệt #sidebar */
 #sidebar-toggle:hover { color: var(--fg); border-color: var(--accent); }
+#sidebar-toggle .bi { transition: transform 280ms cubic-bezier(0.25, 0.8, 0.25, 1); }
+#sidebar-toggle.flipped .bi { transform: rotate(180deg); }
 #sidebar h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .2px; }
 #sidebar .subtitle { font-size: 11.5px; color: var(--fg-muted); margin: 0 0 6px; }
 
@@ -123,6 +150,14 @@ input[type="date"] { padding-right: 6px; }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.subtle { background: transparent; border-color: transparent; color: var(--fg-muted); }
 .btn:disabled { opacity: .5; cursor: default; }
+/* 2026-08-21 (theo yêu cầu người dùng: "dùng icon đẹp và hiện đại hơn" - đổi toàn bộ emoji sang
+   bootstrap-icons, người dùng tự thêm CDN vào index.html) - icon đứng CẠNH chữ trong nút (không
+   phải icon-only) cần margin-right nhẹ để không dính sát chữ; nút CHỈ CÓ icon (.icon-btn, thẻ
+   kết quả) thì icon tự canh giữa theo text-align mặc định của <button>, không cần chỉnh thêm. */
+.btn .bi { margin-right: 5px; vertical-align: -1px; }
+/* Nút CHỈ có icon (không chữ, xem .icon-btn ở khu action mỗi card + nút đổi theme) - bỏ margin
+   để icon canh giữa đúng tâm nút, không lệch sang trái. */
+.icon-btn .bi { margin-right: 0; }
 
 /* Nút đổi sáng/tối — góc trên phải sidebar, icon đổi ☀️/🌙 theo đúng theme đang hiện (xem app.js). */
 #theme-toggle {
@@ -169,6 +204,28 @@ input[type="date"] { padding-right: 6px; }
 
 .anchor-relation { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .anchor-relation-label { font-size: 11px; color: var(--fg-muted); }
+
+/* 2026-08-21 (theo yêu cầu người dùng: "cho canvas này đóng vào mở ra như bên KIS, mỗi mốc có
+   cái đóng mở riêng") - Y HỆT #canvas-toggle/#canvas-panel bên KIS/Q&A (xem ghi chú đầy đủ ở đó)
+   - chỉ đổi tên lớp để KHÔNG áp CSS toàn cục #canvas-toggle (dành riêng cho canvas KIS/Q&A) lên
+   đây, vì mỗi mốc TRAKE/Temporal cần trạng thái đóng/mở ĐỘC LẬP với nhau (lưu ở a.canvasOpen,
+   xem app.js::renderAnchorCards) - dùng max-height (không phải grid-template-rows:0fr, đã xác
+   nhận qua bug thật với canvas KIS: 0fr không co đúng khi có canvas kích thước cố định lồng bên
+   trong nested grid). */
+.anchor-canvas-toggle {
+  width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
+  padding: 7px 0; background: none; border: none; cursor: pointer; color: var(--fg);
+  font: inherit; font-size: 12px; margin-bottom: 6px;
+}
+.anchor-canvas-toggle:hover { color: var(--accent); }
+.anchor-canvas-toggle .act-caret { color: var(--fg-muted); font-size: 9px; }
+.anchor-canvas-toggle .act-title { font-weight: 600; flex: 1; }
+.anchor-canvas-toggle .act-badge {
+  background: var(--accent-soft); color: var(--accent); border-radius: 999px;
+  padding: 1px 8px; font-size: 10.5px; font-weight: 600;
+}
+.anchor-canvas-panel { max-height: 0; overflow: hidden; transition: max-height 320ms cubic-bezier(0.25, 0.8, 0.25, 1); }
+.anchor-canvas-panel.open { max-height: 500px; overflow-y: auto; }
 
 .anchors-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
@@ -292,10 +349,89 @@ input[type="date"] { padding-right: 6px; }
 
 #empty-state { color: var(--fg-muted); padding: 40px; text-align: center; }
 
+/* 2026-08-21 (theo yêu cầu người dùng: "spinner quay ở giữa chứ không phải ghi dòng chữ đang
+   tìm kiếm") - #results là grid (xem dưới) nên 1 item DUY NHẤT mặc định chỉ chiếm ô đầu tiên
+   (~210px, top-left) chứ KHÔNG tự căn giữa cả vùng - grid-column:1/-1 cho nó CHIẾM HẾT bề ngang
+   (span mọi cột hiện có), rồi flex center CẢ ngang lẫn dọc bên trong đúng nghĩa "ở giữa". */
+#search-spinner {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 260px; color: var(--fg-muted); font-size: 42px;
+}
+#search-spinner .bi { animation: aic-spin 0.9s linear infinite; }
+@keyframes aic-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #search-spinner .bi { animation-duration: 2.4s; } }
+
 /* ---- Floating submission bubble ---- */
 #sub-bubble {
   position: fixed; top: 70px; right: 20px; z-index: 40;
 }
+
+/* ---- Floating search-history bubble — đứng CẠNH sub-bubble (bên trái), cùng cơ chế
+   pill+panel-đổ-xuống. right dùng khoảng cách cố định thay vì đo động bề rộng #sub-pill (đơn
+   giản hơn nhiều, panel #sub-panel mở ra vẫn không chồng lên vì đây là pill RIÊNG không phải
+   panel). ---- */
+#hist-bubble {
+  position: fixed; top: 70px; right: 76px; z-index: 40;
+}
+#hist-pill { border-radius: 999px; padding: 8px 12px; box-shadow: var(--shadow); font-size: 15px; }
+#hist-panel {
+  /* 2026-08-21 (theo yêu cầu người dùng: "làm tương tự" - đã làm mượt đóng/mở sidebar, giờ tới
+     2 panel nổi này) - TRƯỚC ĐÂY display:none <-> block đổi tức thì, "display" KHÔNG transition
+     được (thuộc tính rời rạc, không có giá trị trung gian) nên panel bật/tắt như bật công tắc
+     đèn. Đổi sang opacity+transform (2 thuộc tính animate mượt được) LUÔN nằm trong DOM (không
+     display:none nữa) - ẩn thị giác bằng opacity:0 + visibility:hidden (chặn bắt chuột/tab-focus
+     lúc đang ẩn) thay vì gỡ khỏi layout. visibility CHỈ đổi NGAY LẬP TỨC lúc ĐÓNG (delay đúng
+     bằng thời lượng opacity/transform) để không cắt animation fade-out giữa chừng, nhưng đổi
+     NGAY lúc MỞ (delay 0s) để không có khoảng trễ trước khi bắt đầu hiện ra. Cùng easing với
+     sidebar (cubic-bezier(0.25,0.8,0.25,1)) cho cảm giác nhất quán toàn app.
+
+     2026-08-21 (bug thật: "vị trí nó bị vào giữa rồi" - phát hiện qua ảnh chụp thật) - bỏ
+     display:none khiến panel (dù ẩn) VẪN NẰM TRONG LUỒNG, chiếm chỗ THẬT (min-width 340px) bên
+     trong #hist-bubble (position:fixed; right:76px - neo theo MÉP PHẢI của bubble). Bubble vốn
+     chỉ rộng bằng cái pill nhỏ (~40px) khi panel còn display:none; giờ panel luôn hiện diện
+     trong flow -> bubble bị "kéo giãn" rộng ra bằng bề rộng panel -> neo theo right khiến CẢ
+     KHỐI (kể cả pill) bị đẩy dạt sang trái theo đúng bề rộng đó - "vào giữa" màn hình. Fix:
+     đưa panel ra khỏi luồng bằng position:absolute (bubble cha đã position:fixed, tự làm
+     containing block) - không còn đóng góp kích thước vào bubble cha nữa, dù còn nằm trong DOM. */
+  position: absolute; top: 100%; right: 0;
+  width: max-content; min-width: 340px; max-width: min(92vw, 480px);
+  max-height: 75vh; overflow-y: auto;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px; margin-top: 8px;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateY(-8px) scale(0.98);
+  transform-origin: top right;
+  transition: opacity 200ms cubic-bezier(0.25, 0.8, 0.25, 1),
+              transform 200ms cubic-bezier(0.25, 0.8, 0.25, 1),
+              visibility 0s linear 200ms;
+}
+#hist-panel.open {
+  opacity: 1; visibility: visible; pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition: opacity 200ms cubic-bezier(0.25, 0.8, 0.25, 1),
+              transform 200ms cubic-bezier(0.25, 0.8, 0.25, 1),
+              visibility 0s linear 0s;
+}
+#hist-list { display: flex; flex-direction: column; gap: 8px; }
+.hist-empty { font-size: 12.5px; color: var(--fg-muted); text-align: center; padding: 14px 0; }
+.hist-item {
+  border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px;
+  display: flex; flex-direction: column; gap: 6px; font-size: 12.5px;
+}
+.hist-item-top { display: flex; align-items: center; gap: 6px; }
+.hist-item-tag {
+  flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  color: var(--accent); background: var(--accent-soft); padding: 1px 5px; border-radius: 4px;
+}
+.hist-item-time { flex-shrink: 0; margin-left: auto; font-size: 11px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.hist-item-summary {
+  overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.4; color: var(--fg);
+}
+.hist-item-meta { font-size: 11px; color: var(--fg-muted); }
+.hist-item-actions { display: flex; gap: 6px; }
+.hist-item-actions .btn { flex: 1; padding: 5px 8px; font-size: 12px; }
 #sub-pill {
   border-radius: 999px; padding: 8px 14px; box-shadow: var(--shadow);
 }
@@ -303,12 +439,27 @@ input[type="date"] { padding-right: 6px; }
    trong 1 khổ cố định, chặn 2 đầu bằng min/max để không quá hẹp lúc rỗng hay quá rộng khi có
    video_id dài bất thường. */
 #sub-panel {
-  display: none; width: max-content; min-width: 340px; max-width: min(92vw, 480px);
+  /* Y HỆT #hist-panel - xem ghi chú đầy đủ ở đó (theo yêu cầu người dùng: "làm tương tự", kể cả
+     bug "vị trí bị vào giữa" + fix position:absolute). */
+  position: absolute; top: 100%; right: 0;
+  width: max-content; min-width: 340px; max-width: min(92vw, 480px);
   max-height: 75vh; overflow-y: auto;
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 16px; margin-top: 8px;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateY(-8px) scale(0.98);
+  transform-origin: top right;
+  transition: opacity 200ms cubic-bezier(0.25, 0.8, 0.25, 1),
+              transform 200ms cubic-bezier(0.25, 0.8, 0.25, 1),
+              visibility 0s linear 200ms;
 }
-#sub-panel.open { display: block; }
+#sub-panel.open {
+  opacity: 1; visibility: visible; pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition: opacity 200ms cubic-bezier(0.25, 0.8, 0.25, 1),
+              transform 200ms cubic-bezier(0.25, 0.8, 0.25, 1),
+              visibility 0s linear 0s;
+}
 
 .sp-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
 .sp-title { margin: 0; font-size: 19px; line-height: 1.25; font-weight: 700; }
@@ -440,13 +591,40 @@ input[type="date"] { padding-right: 6px; }
   padding: 2px 9px; font-size: 11px; font-weight: 600; white-space: nowrap;
 }
 
-/* Lúc bung: canvas bên trái, cột phải là AND/OR + danh sách khung đã vẽ — tận dụng chiều ngang
-   trước đây bỏ trống hoàn toàn. */
+/* 2026-08-21 (theo yêu cầu người dùng: "tương tự làm cái này cho mượt mà" - đã làm mượt sidebar
+   + 2 bubble nổi, giờ tới panel gấp gọn này) - TRƯỚC ĐÂY toggle class .hidden (display:none <->
+   block) - bật tắt tức thì, không animate được (lý do y hệt #hist-panel/#sub-panel). Nhưng đây
+   là panel CHIẾM CHỖ THẬT trong luồng trang (đẩy nội dung bên dưới xuống khi mở), không phải
+   panel nổi che lên trên như 2 bubble kia - opacity+transform không đủ (nội dung dưới nó phải
+   TỰ DÃN/CO chỗ theo animation, không nhảy khựng), cần animate CHIỀU CAO thật.
+
+   2026-08-21 (bug thật: "vẫn bị" - đã thử kỹ thuật grid-template-rows: 0fr<->1fr trước đó, xác
+   nhận qua ảnh chụp thật VẪN lộ nội dung bị cắt dở dù CSS served đúng, không phải cache trình
+   duyệt) - kỹ thuật đó phụ thuộc row track co đúng 0 khi CÓ nested grid/canvas kích thước cố
+   định bên trong (.cp-inner lại là 1 grid khác, con của nó - #canvas-global-mount chứa <canvas>
+   width/height cố định bằng JS - có min-height mặc định riêng, không bị min-height:0 của
+   .cp-inner "lan truyền" xuống) - dễ vỡ, khó chẩn đoán tiếp tại sao đúng lý thuyết mà vẫn lộ.
+   Đổi sang max-height (kỹ thuật CŨ HƠN nhưng ĐÁNG TIN CẬY hơn nhiều, không phụ thuộc chi tiết
+   nested layout bên trong) - overflow:hidden CHÍNH #canvas-panel + max-height 0 <-> 1 giá trị ĐỦ
+   LỚN (không cần khớp tuyệt đối, chỉ cần lớn hơn chiều cao thật) - animate max-height LUÔN clip
+   đúng theo overflow bất kể cấu trúc bên trong phức tạp thế nào. */
 #canvas-panel {
-  display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr);
+  max-height: 0; overflow: hidden;
+  transition: max-height 320ms cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+#canvas-panel.open { max-height: 700px; overflow-y: auto; } /* phòng khi danh sách khung đã vẽ dài hơn 700px thật (vd vẽ rất nhiều khung) - cuộn thay vì bị cắt mất */
+/* 2026-08-21 (theo yêu cầu người dùng: "cho cái canvas này vào giữa được không") - cột phải
+   TRƯỚC ĐÂY là 1fr (chiếm HẾT phần còn lại của bề ngang trang) trong khi nội dung thật (AND/OR +
+   vài dòng khung đã vẽ) hẹp hơn nhiều -> cột phải bị kéo giãn rỗng, cả khối 2 cột dồn về sát
+   trái, để trống mênh mông bên phải. Đổi cột 2 sang max-content (tự co theo ĐÚNG nội dung, không
+   chiếm thừa) + justify-content:center trên .cp-inner (canh CẢ KHỐI 2 cột vào giữa .cp-inner khi
+   tổng bề rộng 2 cột nhỏ hơn container, thay vì luôn dính mép trái). */
+#canvas-panel > .cp-inner {
+  display: grid; grid-template-columns: minmax(0, 360px) minmax(0, max-content);
+  justify-content: center;
   gap: 18px; padding: 4px 18px 14px; align-items: start;
 }
-#canvas-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+#canvas-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; max-width: 420px; }
 #canvas-box-list { display: flex; flex-direction: column; gap: 5px; }
 .cbl-label, .cbl-empty { font-size: 11px; color: var(--fg-muted); }
 .cbl-label { font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
@@ -461,7 +639,7 @@ input[type="date"] { padding-right: 6px; }
   color: var(--fg-muted); font-size: 10.5px; display: grid; place-items: center;
   font-variant-numeric: tabular-nums;
 }
-@media (max-width: 900px) { #canvas-panel { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { #canvas-panel > .cp-inner { grid-template-columns: 1fr; } }
 
 #spatial-op-row {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;

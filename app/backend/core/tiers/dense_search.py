@@ -1450,6 +1450,26 @@ def _combine_candidates(
     return {(vid, fi) for vid, fi in row_pos if vid in video_allowed}
 
 
+_FILTER_ONLY_COLUMNS = ["video_id", "frame_id", "shot_idx", "path", "score"]
+
+
+def _filter_only_result(candidates: set[tuple[str, int]], top_k: int) -> pd.DataFrame:
+    """Query rong (chi con bo loc cung/canvas, xem nhanh "if not query" trong search_dense) -
+    KHONG co diem ngu nghia nao de xep hang (khong encode gi ca) - tra ve cac frame khop bo loc
+    theo thu tu ON DINH (video_id, frame_id) de nguoi dung xem lai NHIEU LAN cung 1 bo loc ra
+    DUNG THU TU giong nhau (khong phai random/theo thu tu luu tru vat ly). Cot "score" = None cho
+    moi dong (UI da xu ly `row.score != null` san, xem app.js::renderSingleCard)."""
+    if not candidates:
+        return pd.DataFrame(columns=_FILTER_ONLY_COLUMNS)
+    row_pos = _load_dense_row_pos()
+    keys = sorted(k for k in candidates if k in row_pos)[:top_k]
+    positions = [row_pos[k] for k in keys]
+    meta = _load_dense_meta()
+    out = meta.iloc[positions][["video_id", "frame_idx", "shot_idx", "path"]].copy()
+    out["score"] = None
+    return out.rename(columns={"frame_idx": "frame_id"}).reset_index(drop=True)
+
+
 def search_dense(
     query: str,
     mode: str,
@@ -1536,6 +1556,26 @@ def search_dense(
     # tung DONG bang cot "is_backfill" (KHONG phai ca ket qua) de UI biet dong nao la khop loc
     # THAT, dong nao la bu them - gap-honesty, khong am tham danh lua nguoi dung.
     hard_filter_active = candidates is not None
+
+    # 2026-08-21 (theo yeu cau nguoi dung: "input query có thể bỏ trống, với điều kiện bộ lọc
+    # hoặc canvas phải được vẽ... nếu input query trống thì cứ bỏ qua encode và search embedding")
+    # - query rong (hoac chi khoang trang) + CO it nhat 1 bo loc cung dang hoat dong -> BO HAN
+    # buoc chung cat/encode/xep hang dense (khong co gi de encode) - tra THANG cac frame khop bo
+    # loc, KHONG xep hang theo ngu nghia (score=None, UI da xu ly None san). Validate "phai co It
+    # NHAT 1 dieu kien" (query HOAC filter) la trach nhiem cua backend/main.py (tra 400 truoc khi
+    # goi toi day) - o day chi phong than: candidates=None (khong loc gi) + query rong nghia la
+    # KHONG CO GI de tim, nem loi ro rang thay vi tra ve NGUYEN CA CORPUS khong xep hang.
+    if not (query or "").strip():
+        if candidates is None:
+            raise ValueError("Query trống và không có bộ lọc/canvas nào đang lọc - không có gì để tìm.")
+        if log:
+            with log.timed("Bỏ qua embedding (query trống) — chỉ lọc theo bộ lọc/canvas") as set_detail:
+                result = _filter_only_result(candidates, top_k)
+                set_detail(f"{len(result)} frame khớp bộ lọc (không xếp hạng theo ngữ nghĩa, không encode)")
+        else:
+            result = _filter_only_result(candidates, top_k)
+        result["is_backfill"] = False
+        return result
 
     # 2026-08-15 (theo yeu cau nguoi dung): chung cat/dich query 1 LAN duy nhat truoc khi encode
     # - dung CHUNG cho ca 3 model (siglip/pe_core/beit3) thay vi tung model tu dich rieng. Xem

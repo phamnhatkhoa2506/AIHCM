@@ -147,15 +147,15 @@
     const pending = st.pending[st.active];
     const confirmed = st.confirmed[st.active];
     if (pending !== confirmed) {
-      confirmStatus.innerHTML = `⏳ Đang xem thử frame <code>${pending}</code> — frame ĐÃ CHỐT (dùng khi nộp) vẫn là <code>${confirmed}</code>.`;
+      confirmStatus.innerHTML = `<i class="bi bi-hourglass-split"></i> Đang xem thử frame <code>${pending}</code> — frame ĐÃ CHỐT (dùng khi nộp) vẫn là <code>${confirmed}</code>.`;
       confirmBtn.classList.remove("hidden");
     } else {
-      confirmStatus.innerHTML = `✅ Frame đã chốt: <code>${confirmed}</code>`;
+      confirmStatus.innerHTML = `<i class="bi bi-check-circle-fill"></i> Frame đã chốt: <code>${confirmed}</code>`;
       confirmBtn.classList.add("hidden");
     }
     const original = st.original[st.active];
     revertBtn.disabled = pending === original;
-    revertBtn.textContent = `↩ Về frame gốc (${original})`;
+    revertBtn.innerHTML = `<i class="bi bi-arrow-counterclockwise"></i> Về frame gốc (${original})`;
   }
 
   // Lịch sử các frame ĐÃ CHỐT của mốc đang chọn (không phải mọi lần nudge/kéo, chỉ những lần
@@ -205,14 +205,14 @@
   function renderSubmitArea() {
     submitArea.innerHTML = "";
     if (st.mode === "trake") {
-      submitArea.innerHTML = `<p class="field-note">Loại truy vấn hiện tại: <b>TRAKE</b> — nộp đủ cả chuỗi bằng nút "📤 Nộp" BÊN NGOÀI Playback (đã tự đọc đúng frame vừa xác nhận ở đây).</p>`;
+      submitArea.innerHTML = `<p class="field-note">Loại truy vấn hiện tại: <b>TRAKE</b> — nộp đủ cả chuỗi bằng nút "<i class="bi bi-send-fill"></i> Nộp" BÊN NGOÀI Playback (đã tự đọc đúng frame vừa xác nhận ở đây).</p>`;
       return;
     }
     if (st.mode === "temporal") {
       const median = medianOf(st.confirmed);
       submitArea.innerHTML = `
         <p class="field-note">Loại truy vấn hiện tại: <b>Temporal</b> — frame giữa = <code>${median}</code></p>
-        <button type="button" id="pb-submit-btn" class="btn primary">📤 Nộp (Temporal)</button>`;
+        <button type="button" id="pb-submit-btn" class="btn primary"><i class="bi bi-send-fill"></i> Nộp (Temporal)</button>`;
       document.getElementById("pb-submit-btn").addEventListener("click", (e) => st.onSubmit(e.currentTarget, null));
       return;
     }
@@ -222,13 +222,13 @@
           <label class="qa-label">Câu trả lời</label>
           <input type="text" id="pb-answer" value="${(st.answer || "").replace(/"/g, "&quot;")}" />
         </div>
-        <button type="button" id="pb-submit-btn" class="btn primary">📤 Nộp</button>`;
+        <button type="button" id="pb-submit-btn" class="btn primary"><i class="bi bi-send-fill"></i> Nộp</button>`;
       document.getElementById("pb-submit-btn").addEventListener("click", (e) =>
         st.onSubmit(e.currentTarget, document.getElementById("pb-answer").value.trim()));
       return;
     }
     // kis
-    submitArea.innerHTML = `<button type="button" id="pb-submit-btn" class="btn primary">📤 Nộp</button>`;
+    submitArea.innerHTML = `<button type="button" id="pb-submit-btn" class="btn primary"><i class="bi bi-send-fill"></i> Nộp</button>`;
     document.getElementById("pb-submit-btn").addEventListener("click", (e) => st.onSubmit(e.currentTarget, null));
   }
 

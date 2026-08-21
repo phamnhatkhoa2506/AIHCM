@@ -5,6 +5,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AIC 2026</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
   <link rel="stylesheet" href="/static/css/theme.css" />
   <link rel="stylesheet" href="/static/css/layout.css" />
 </head>
@@ -13,7 +14,7 @@
   <div class="app-shell">
 
     <aside id="sidebar">
-      <button id="theme-toggle" class="icon-btn" data-tooltip="Đổi giao diện sáng/tối">🌙</button>
+      <button id="theme-toggle" class="icon-btn" data-tooltip="Đổi giao diện sáng/tối"><i class="bi bi-moon-stars-fill"></i></button>
 
       <div>
         <h1>AIC 2026</h1>
@@ -93,7 +94,7 @@
           <option value="meta/llama-3.2-11b-vision-instruct">Llama 3.2 11B Vision</option>
           <option value="nvidia/nemotron-nano-12b-v2-vl">Nemotron Nano 12B v2 VL</option>
         </select>
-        <p class="field-note">Dùng chung cho nút "🔍 VLM Verify" (đọc lại chữ khi nghi ngờ OCR bỏ sót/đọc sai) VÀ
+        <p class="field-note">Dùng chung cho nút "VLM Verify" (đọc lại chữ khi nghi ngờ OCR bỏ sót/đọc sai) VÀ
           "Dùng LVLM tự động trả lời" ở chế độ Q&amp;A.</p>
       </div>
 
@@ -107,15 +108,15 @@
       <div id="sidebar-resize" title="Kéo để chỉnh độ rộng"></div>
     </aside>
 
-    <button id="sidebar-toggle" title="Đóng/mở sidebar">‹</button>
+    <button id="sidebar-toggle" class="icon-btn" title="Đóng/mở sidebar"><i class="bi bi-chevron-left"></i></button>
 
     <main id="main">
       <div id="topbar">
-        <input type="text" id="query-input" placeholder="Nhập truy vấn" />
+        <input type="text" id="query-input" placeholder="Nhập truy vấn (bỏ trống được nếu đã có bộ lọc/canvas)" />
         <div id="qa-box" class="hidden">
           <div class="qa-field">
             <label class="qa-label">Mô tả sự kiện</label>
-            <input type="text" id="qa-event" placeholder="vd: một người đang nấu ăn với chảo và thìa" />
+            <input type="text" id="qa-event" placeholder="vd: một người đang nấu ăn với chảo và thìa (bỏ trống được nếu đã có bộ lọc/canvas)" />
           </div>
           <div class="qa-field">
             <label class="qa-label">Câu hỏi</label>
@@ -143,7 +144,7 @@
             <output id="max-gap-val">25.00</output>
           </div>
         </div>
-        <button id="search-btn" class="btn primary">🔍 Tìm kiếm</button>
+        <button id="search-btn" class="btn primary"><i class="bi bi-search"></i> Tìm kiếm</button>
       </div>
 
       <!-- Quan hệ AND/OR — dùng CHUNG cho MỌI canvas (toàn cục KIS/Q&A lẫn riêng-từng-mốc
@@ -165,17 +166,19 @@
            danh sách khung đã vẽ + AND/OR (tận dụng chiều ngang thay vì bỏ trống). -->
       <div id="canvas-section" class="hidden">
         <button type="button" id="canvas-toggle" aria-expanded="false">
-          <span class="ct-caret">▸</span>
-          <span class="ct-title">🎨 Vẽ vùng OCR / Object</span>
+          <span class="ct-caret"><i class="bi bi-chevron-right"></i></span>
+          <span class="ct-title"><i class="bi bi-vector-pen"></i> Vẽ vùng OCR / Object</span>
           <span class="ct-sub">tuỳ chọn — khoanh vị trí chữ hoặc vật thể cần tìm trong khung hình</span>
           <span id="canvas-badge" class="hidden"></span>
         </button>
-        <div id="canvas-panel" class="hidden">
-          <div id="canvas-global-mount"></div>
-          <aside id="canvas-side">
-            <div id="canvas-side-op"></div>
-            <div id="canvas-box-list"></div>
-          </aside>
+        <div id="canvas-panel">
+          <div class="cp-inner">
+            <div id="canvas-global-mount"></div>
+            <aside id="canvas-side">
+              <div id="canvas-side-op"></div>
+              <div id="canvas-box-list"></div>
+            </aside>
+          </div>
         </div>
       </div>
 
@@ -185,15 +188,14 @@
         <div id="anchors-row"></div>
         <div class="anchors-actions">
           <button type="button" id="add-anchor" class="btn subtle">+ Thêm mốc</button>
-          <button type="button" id="reset-anchors" class="btn subtle" title="Xoá hết, quay về 2 mốc trống mặc định">🗑
-            Xoá tất cả các mốc</button>
+          <button type="button" id="reset-anchors" class="btn subtle" title="Xoá hết, quay về 2 mốc trống mặc định"><i class="bi bi-trash3"></i> Xoá tất cả các mốc</button>
         </div>
       </div>
 
       <!-- Lọc kết quả ĐÃ tìm được (client-side, không gọi lại search) theo video_id — dùng
            chung cho mọi mode, xem app.js::filterResults. -->
       <div id="result-filter-box" class="hidden">
-        <input type="text" id="result-filter" placeholder="🔎 Lọc kết quả theo video_id (vd: L21_V001)" />
+        <input type="text" id="result-filter" placeholder="Lọc kết quả theo video_id (vd: L21_V001)" />
       </div>
 
       <div id="steplog"></div>
@@ -213,7 +215,7 @@
   <div id="video-player" class="hidden">
     <div class="vp-head">
       <span id="vp-title"></span>
-      <button id="vp-close" class="btn subtle" title="Đóng video">✕</button>
+      <button id="vp-close" class="btn subtle icon-btn" title="Đóng video"><i class="bi bi-x-lg"></i></button>
     </div>
     <div id="vp-body">
       <video id="vp-video" controls autoplay></video>
@@ -224,42 +226,42 @@
   <div id="playback-modal" class="hidden">
     <div class="pb-box">
       <div class="pb-head">
-        <h2>🎬 Playback — xem/chỉnh frame</h2>
-        <button id="pb-close" class="btn subtle">✕</button>
+        <h2><i class="bi bi-camera-reels"></i> Playback — xem/chỉnh frame</h2>
+        <button id="pb-close" class="btn subtle icon-btn"><i class="bi bi-x-lg"></i></button>
       </div>
       <div id="pb-timeline" class="pb-timeline"></div>
       <div id="pb-anchor-picker" class="pb-anchor-picker"></div>
 
       <div class="pb-controls">
         <div class="pb-nudge-row">
-          <button type="button" id="pb-prev" class="btn subtle">◀ -5</button>
+          <button type="button" id="pb-prev" class="btn subtle"><i class="bi bi-chevron-left"></i> 5</button>
           <div class="pb-goto-row">
             <input type="number" id="pb-typed" min="0" step="1" />
-            <button type="button" id="pb-goto" class="btn subtle">➡ Đi tới</button>
+            <button type="button" id="pb-goto" class="btn subtle"><i class="bi bi-arrow-right-short"></i> Đi tới</button>
           </div>
-          <button type="button" id="pb-next" class="btn subtle">+5 ▶</button>
+          <button type="button" id="pb-next" class="btn subtle">5 <i class="bi bi-chevron-right"></i></button>
         </div>
         <div class="slider-row">
           <input type="range" id="pb-slider" min="0" step="1" />
-          <button type="button" id="pb-revert" class="btn subtle">↩ Frame gốc</button>
+          <button type="button" id="pb-revert" class="btn subtle"><i class="bi bi-arrow-counterclockwise"></i> Frame gốc</button>
         </div>
       </div>
 
       <div class="pb-body">
         <div class="pb-col-frame">
-          <span class="pb-col-label">🖼️ Frame xem thử</span>
+          <span class="pb-col-label"><i class="bi bi-image"></i> Frame xem thử</span>
           <img id="pb-preview" alt="Xem trước frame" />
           <div id="pb-preview-caption" class="field-note"></div>
         </div>
         <div class="pb-col-video">
-          <span class="pb-col-label">🎞️ Video gốc</span>
+          <span class="pb-col-label"><i class="bi bi-film"></i> Video gốc</span>
           <video id="pb-video" controls></video>
         </div>
       </div>
 
       <div id="pb-confirm-row">
         <span id="pb-confirm-status"></span>
-        <button type="button" id="pb-confirm" class="btn primary hidden">✅ Xác nhận frame này</button>
+        <button type="button" id="pb-confirm" class="btn primary hidden"><i class="bi bi-check-circle-fill"></i> Xác nhận frame này</button>
       </div>
       <div id="pb-history-box">
         <span class="pb-history-label">Lịch sử frame đã chốt (bấm để quay lại)</span>
@@ -270,12 +272,29 @@
     </div>
   </div>
 
+  <!-- Lịch sử tìm kiếm — mỗi lần bấm "Tìm kiếm" thành công được ghi 1 dòng (lưu localStorage,
+       xem app.js::recordSearchHistory). "↩ Khôi phục" điền lại NGUYÊN VẸN form + bucket nộp bài
+       lúc đó rồi tự search lại - không chỉ nhớ mỗi câu query mà cả filter/model/canvas/tuỳ chọn. -->
+  <div id="hist-bubble">
+    <button id="hist-pill" class="btn subtle icon-btn" title="Lịch sử tìm kiếm"><i class="bi bi-clock-history"></i></button>
+    <div id="hist-panel">
+      <div class="sp-title-row">
+        <h2 class="sp-title"><i class="bi bi-clock-history"></i> Lịch sử tìm kiếm</h2>
+        <button id="hist-close" class="btn subtle icon-btn" title="Đóng"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="sp-actions" style="grid-template-columns: 1fr;">
+        <button class="btn subtle" id="hist-clear"><i class="bi bi-trash3"></i> Xoá toàn bộ lịch sử</button>
+      </div>
+      <div id="hist-list"></div>
+    </div>
+  </div>
+
   <div id="sub-bubble">
-    <button id="sub-pill" class="btn primary">📤 <span id="sub-count">0</span></button>
+    <button id="sub-pill" class="btn primary"><i class="bi bi-send-fill"></i> <span id="sub-count">0</span></button>
     <div id="sub-panel">
       <div class="sp-title-row">
-        <h2 class="sp-title">📤 Danh sách nộp bài<br />(<span id="sp-count-full">0/100</span>)</h2>
-        <button id="sp-close" class="btn subtle" title="Đóng">✕</button>
+        <h2 class="sp-title"><i class="bi bi-send-fill"></i> Danh sách nộp bài<br />(<span id="sp-count-full">0/100</span>)</h2>
+        <button id="sp-close" class="btn subtle icon-btn" title="Đóng"><i class="bi bi-x-lg"></i></button>
       </div>
 
       <div class="sp-field">
@@ -284,11 +303,11 @@
         <input type="text" id="sp-name" placeholder="query-p1-x-kis" />
       </div>
 
-      <button id="sp-new-query" class="btn sp-new-btn">🆕 Câu hỏi mới (bắt đầu 100 dòng mới)</button>
+      <button id="sp-new-query" class="btn sp-new-btn"><i class="bi bi-plus-circle"></i> Câu hỏi mới (bắt đầu 100 dòng mới)</button>
 
       <div class="sp-actions">
-        <button class="btn subtle" id="sp-clear">🗑️ Xoá hết</button>
-        <button class="btn subtle" id="sp-csv">⬇️ CSV</button>
+        <button class="btn subtle" id="sp-clear"><i class="bi bi-trash3"></i> Xoá hết</button>
+        <button class="btn subtle" id="sp-csv"><i class="bi bi-download"></i> CSV</button>
       </div>
 
       <div id="sp-list"></div>
@@ -307,7 +326,7 @@
 
   <!-- Phóng to/thu nhỏ ảnh frame (giống nút mở rộng của st.image bên Streamlit) -->
   <div id="lightbox" class="hidden">
-    <button id="lightbox-close" title="Đóng (Esc)">✕</button>
+    <button id="lightbox-close" class="icon-btn" title="Đóng (Esc)"><i class="bi bi-x-lg"></i></button>
     <img id="lightbox-img" src="" alt="" />
     <span id="lightbox-hint">Cuộn chuột hoặc bấm để phóng to/thu nhỏ</span>
   </div>

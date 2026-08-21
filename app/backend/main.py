@@ -98,10 +98,19 @@ def search(req: SearchRequest) -> SearchResponse:
             filt.setdefault("min_count", plan.get("resolved_min_count"))
 
         if req.mode in ("kis", "qa"):
-            if not req.query:
-                raise HTTPException(400, "Thiếu 'query' cho mode kis/qa")
+            # 2026-08-21 (theo yêu cầu người dùng: "input query có thể bỏ trống, với điều kiện
+            # bộ lọc hoặc canvas phải được vẽ để không phải input đầu vào bị trống hoàn toàn") -
+            # TRƯỚC ĐÂY query là BẮT BUỘC tuyệt đối. Giờ cho phép bỏ trống NẾU có ít nhất 1 bộ
+            # lọc/canvas thật sự đang lọc - `filt` tại đây đã gồm CẢ spatial_boxes (nếu có vẽ
+            # canvas, xem khối `if req.boxes` ở trên) LẪN mọi field của Filters (keywords/date/
+            # video_ids/ocr_text/asr_text) - rỗng hoàn toàn (`{}`) chỉ khi KHÔNG có gì cả, đúng
+            # điều kiện "không phải input đầu vào bị trống hoàn toàn" người dùng yêu cầu.
+            if not req.query and not filt:
+                raise HTTPException(
+                    400, "Cần nhập query HOẶC có ít nhất 1 bộ lọc/khung vẽ canvas cho mode kis/qa",
+                )
             result = search_dense(
-                req.query, req.dense_model, top_k=req.top_k,
+                req.query or "", req.dense_model, top_k=req.top_k,
                 ocr_algorithm=req.ocr_algorithm, score_algorithm=req.score_algorithm,
                 distill_model=req.distill_model, multi_clause=req.multi_clause, log=log, **filt,
             )

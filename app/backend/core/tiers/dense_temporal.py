@@ -433,6 +433,74 @@ def search(
                 set_detail(f"nâng cấp {n_upgraded}/{n_level1_backfill} dòng backfill bằng pool mở rộng "
                            f"(chọn được frame khớp tốt hơn cho 1+ mốc) — bù thêm {len(extra2)} dòng mới")
 
+    # LEVEL-3 BACKFILL (2026-08-21, theo yeu cau nguoi dung: "không đủ 100 kết quả, như thế này
+    # khi nộp thì không đủ 100 kết quả bắt buộc" - phat hien qua case that TRAKE 4-moc "lân quay
+    # vòng...4 chân chạm đất...chào ban giám khảo...chào 1 con rồng" - CHI ra 42/100 du da qua ca
+    # Level-1 (noi rang buoc khoang cach) LAN Level-2 (mo rong pool 8000/moc)): 2 tang backfill o
+    # tren VAN bi CHUNG 1 gioi han cung - _temporal_join() CHI tra ve DUNG 1 dong/video CO DU CA
+    # N moc cung luc (giao cua N tap ung vien, xem docstring dau ham) - neu SO VIDEO co du ca 4
+    # moc (du da noi long het co) < top_k, KHONG CO CACH NAO Level-1/2 vuot qua tran do, vi ban
+    # chat van doi hoi giao ca N tap. Day la khac biet CO BAN voi search_dense() (KIS/QA) - backfill
+    # o do lay THANG tu TOAN BO corpus (khong co rang buoc "phai co N thu tim thay trong 1 dong")
+    # nen LUON du top_k; TRAKE thi KHONG THE, vi 1 dong TRAKE dinh nghia la 1 CHUOI ca N moc.
+    #
+    # Fix: neu SAU CA 2 tang tren VAN thieu, dem not bang XEP HANG RIENG cua 1 moc DUY NHAT (anchor
+    # 0) cho cac VIDEO CHUA CO trong joined - LAP LAI frame cua moc 0 cho MOI vi tri mocc khac
+    # (KHONG phai khop that su cac moc con lai, chi de CO DU FORMAT nop bai) - giong y het tinh
+    # than "cac he thong khac tra ve DU top_k" da ap dung cho KIS/QA, is_backfill=True DE UI/nguoi
+    # dung biet day la doan bu thap tin cay nhat (BTC chi can DU 100 dong, khong phat vi dong sai -
+    # metric R@K chi quan tam GT co trong top-K hay khong, khong phat cac dong con lai).
+    #
+    # 2026-08-21 (bug thật LẦN 2, phát hiện qua chính case "lân...": lần fix đầu tái dùng
+    # wide_pools[0]/anchor_pools[0] - CHỈ ra 48/100, tưởng đã đủ nhưng vẫn thiếu) - đo THẬT bằng
+    # script debug: pool(1000) chỉ phủ 41 VIDEO DUY NHẤT, pool(8000) chỉ 48 - vì top-K bị "CHIẾM"
+    # bởi 1 CỤM video liên quan nhất (mỗi video hàng trăm frame gần giống nhau đều lọt top), các
+    # video CÒN LẠI hoàn toàn KHÔNG CÓ frame nào lọt nổi top-8000 dù muốn lấy "video khác" cũng
+    # không có gì để lấy. Đo tiếp: pool(20000)=421 video, pool(40000)=867/873 (gần hết corpus) -
+    # phải vượt hẳn ngưỡng đó mới "tràn" ra được các video ít liên quan hơn. Fix: Level-3 tự query
+    # pool RIÊNG cho anchor 0 với kích thước ĐỦ LỚN (không tái dùng pool 8000 của Level-2 nữa) -
+    # đủ để phủ gần hết 873 video trong corpus, đảm bảo LUÔN đủ top_k dòng bất kể top_k bao nhiêu.
+    LEVEL3_POOL_SIZE = 45000
+    if len(joined) < top_k:
+        n_missing = top_k - len(joined)
+        with (log.timed(f"Tầng 3 — bù nốt cho đủ {top_k} (xếp hạng riêng mốc 1, pool {LEVEL3_POOL_SIZE}, không khớp đủ chuỗi)") if log
+              else contextlib.nullcontext(lambda *_a, **_k: None)) as set_detail:
+            a0 = anchors[0]
+            pool0 = _run_anchor_pool(
+                a0["text"], dense_model, LEVEL3_POOL_SIZE,
+                must_have_labels=list({*(must_have_labels or []), *(a0["must_have_labels"] or [])}) or None,
+                min_count={**(min_count or {}), **(a0["min_count"] or {})} or None,
+                ocr_text=a0["ocr_text"] or ocr_text, asr_text=a0["asr_text"] or asr_text,
+                video_ids=video_ids,
+                spatial_boxes=[*(spatial_boxes or []), *(a0["spatial_boxes"] or [])] or None,
+                spatial_op=a0["spatial_op"] or spatial_op,
+                ocr_algorithm=ocr_algorithm, score_algorithm=score_algorithm,
+                distill_model=distill_model, log=log,
+            )
+            existing_videos = {video_id for video_id, _picks, _score in joined}
+            # Moi video CHI lay 1 ung vien TOT NHAT (theo diem moc 0) - trung video thi giu ban
+            # diem cao hon, dung dict thay vi list de khu trung truoc khi sap xep.
+            best_per_video: dict[str, tuple[int, float, str]] = {}
+            for (video_id, frame_id), (score, path) in pool0.items():
+                if video_id in existing_videos:
+                    continue
+                cur = best_per_video.get(video_id)
+                if cur is None or score > cur[1]:
+                    best_per_video[video_id] = (frame_id, score, path)
+            ranked0 = sorted(best_per_video.items(), key=lambda kv: -kv[1][1])[:n_missing]
+            extra3 = []
+            for video_id, (frame_id, score, path) in ranked0:
+                fps = fps_map.get(video_id, 25.0)
+                pts_time = frame_id / fps
+                picks = [_Pick(frame_id=frame_id, pts_time=pts_time, score=score, path=path) for _ in range(len(anchors))]
+                extra3.append((video_id, picks, score))
+            backfill_video_ids |= {video_id for video_id, _picks, _score in extra3}
+            joined = joined + extra3
+            if log:
+                set_detail(f"chỉ {top_k - n_missing}/{top_k} video có ĐỦ cả {len(anchors)} mốc (kể cả sau khi nới "
+                           f"rộng pool) — bù nốt {len(extra3)} dòng theo xếp hạng RIÊNG mốc 1 (lặp lại "
+                           f"frame mốc 1 cho các mốc còn lại - KHÔNG khớp thật, chỉ để đủ số dòng nộp bài)")
+
     rows = []
     for video_id, picks, score in joined:
         row: dict = {"video_id": video_id, "score": score, "is_backfill": video_id in backfill_video_ids}

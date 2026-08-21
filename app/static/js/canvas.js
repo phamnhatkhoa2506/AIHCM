@@ -24,15 +24,15 @@
   function createCanvasWidget(mountEl, opts = {}) {
     mountEl.innerHTML = `
       <div class="canvas-modebar">
-        <button type="button" class="canvas-mode-btn canvas-mode-ocr active">🟢 OCR (gõ chữ tự do)</button>
-        <button type="button" class="canvas-mode-btn canvas-mode-object">🟡 Object (chọn nhãn)</button>
+        <button type="button" class="canvas-mode-btn canvas-mode-ocr active"><i class="bi bi-circle-fill" style="color:#22c55e"></i> OCR (gõ chữ tự do)</button>
+        <button type="button" class="canvas-mode-btn canvas-mode-object"><i class="bi bi-circle-fill" style="color:#f5c518"></i> Object (chọn nhãn)</button>
       </div>
       <div class="canvas-stage-wrap">
         <div class="canvas-stage"><canvas class="canvas-grid"></canvas></div>
       </div>
       <div class="canvas-toolbar">
-        <button type="button" class="btn subtle canvas-undo">↩ Hoàn tác</button>
-        <button type="button" class="btn subtle canvas-clear">🗑 Xoá hết</button>
+        <button type="button" class="btn subtle canvas-undo"><i class="bi bi-arrow-counterclockwise"></i> Hoàn tác</button>
+        <button type="button" class="btn subtle canvas-clear"><i class="bi bi-trash3"></i> Xoá hết</button>
         <span class="field-note canvas-hint">Chọn chế độ ở trên rồi kéo chuột vẽ khung.</span>
       </div>`;
 
@@ -89,6 +89,11 @@
       const text = boxDisplayLabel(b);
       if (text) {
         ctx.font = "600 12px system-ui, sans-serif";
+        // 2026-08-21 (theo yêu cầu người dùng: "dùng icon đẹp và hiện đại hơn" - đã đổi emoji ->
+        // bootstrap-icons ở HẦU HẾT nơi khác) - CHỖ NÀY GIỮ NGUYÊN emoji: đây là chip vẽ trực
+        // tiếp lên <canvas> 2D qua ctx.fillText(), KHÔNG PHẢI HTML - bootstrap-icons là web font
+        // hiển thị qua CSS ::before trên thẻ <i>, không vẽ được vào canvas theo cách này (cần
+        // load riêng font PUA codepoint của icon, phức tạp/rủi ro hơn nhiều so với lợi ích).
         const icon = b.kind === "ocr" ? "🔤" : "🔲";
         const label = "#" + (idx + 1) + " " + icon + " " + text;
         const padX = 5;
@@ -299,6 +304,14 @@
         }));
       },
       hasBoxes() { return boxes.length > 0; },
+      // 2026-08-21 (theo yêu cầu người dùng: "lịch sử tìm kiếm... khôi phục lại trạng thái đó")
+      // - canvas TOÀN CỤC (KIS/Q&A) là 1 singleton tạo 1 LẦN lúc tải trang (khác canvas/mốc của
+      // TRAKE/Temporal, vốn đã hỗ trợ khôi phục qua opts.initialBoxes vì bị tạo LẠI mỗi lần
+      // renderAnchorCards) - cần cách bơm khung đã vẽ vào widget ĐANG SỐNG, không tạo mới được.
+      setBoxes(newBoxes) {
+        boxes = (newBoxes || []).map((b) => ({ ...b }));
+        draw(); // draw() tự gọi opts.onChange(boxes) - badge "N khung" tự cập nhật theo
+      },
       destroy() { if (ro) ro.disconnect(); },
     };
   }

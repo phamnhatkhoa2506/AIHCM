@@ -394,6 +394,24 @@ def by_metadata(
         df = df[df["publish_date"] <= pd.to_datetime(date_to)]
     if video_ids:
         wanted = {v.strip().upper() for v in video_ids if v.strip()}
+        # 2026-08-21 (bug thật nguoi dung phat hien: "search bo loc theo video_id, neu video_id
+        # do khong co trong du lieu thi no search cuc ky lau va khong thong bao video_id do khong
+        # co") - TRUOC DAY video_id sai chinh ta/khong ton tai lam `df` sau loc RONG (0 video) ->
+        # by_metadata() tra ve set() RONG (KHAC None) -> _combine_candidates coi la "co loc that,
+        # nhung 0 ket qua" -> search_dense() kich hoat BACKFILL (bu them ket qua KHONG qua loc
+        # cho DU top_k, xem docstring search_dense "BACKFILL") -> chay 1 lan search dense KHONG
+        # GIOI HAN TOAN BO CORPUS (rat cham neu qua Modal remote/model chua warm) MA KHONG HE bao
+        # cho nguoi dung biet video_id ho go SAI - ket qua tra ve nhin nhu binh thuong (chi la
+        # KHONG loc gi ca), am tham lam sai y dinh loc cua nguoi dung. Validate NGAY o day, that
+        # bai NHANH (khong cham gi den dense/backfill) + bao ro video_id nao khong ton tai, thay
+        # vi de lo trang.
+        known = set(resources.get().video_meta["video_id"].str.upper())
+        invalid = sorted(wanted - known)
+        if invalid:
+            raise ValueError(
+                f"video_id không tồn tại trong dữ liệu: {', '.join(invalid)}"
+                f" (kiểm tra lại chính tả, vd đúng định dạng L21_V001)"
+            )
         df = df[df["video_id"].str.upper().isin(wanted)]
     if keywords_any:
         # dem khoang trang 2 dau ca needle va haystack de containment check roi dung ranh gioi
