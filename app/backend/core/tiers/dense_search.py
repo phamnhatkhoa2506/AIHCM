@@ -241,9 +241,12 @@ class _LocalRegionRerank:
 
         from transformers import AutoModel, AutoProcessor
 
-        from config import _V3_ROOT
+        # 2026-08-21 - cung bug ten bien cu `_V3_ROOT` nhu local_text_encoders.py (xem ghi chu
+        # day du o do): config.py ban app/ chi co `_APP_ROOT`, nen Region-CLIP rerank chay LOCAL
+        # (AIC_LOCAL_REGION_CLIP=1) cung chet ngay bang ImportError.
+        from config import _APP_ROOT
 
-        os.environ.setdefault("HF_HOME", str(_V3_ROOT / ".cache" / "huggingface"))
+        os.environ.setdefault("HF_HOME", str(_APP_ROOT / ".cache" / "huggingface"))
         for p in (REGION_SCOPE_CACHE_PATH, REGION_EMB_PATH, REGION_EMB_IDS_PATH):
             if not p.exists():
                 raise RuntimeError(

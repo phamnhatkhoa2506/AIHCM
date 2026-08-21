@@ -35,6 +35,17 @@ from app_flags import call_modal_with_timeout
 MODAL_APP_NAME = "aic2026-query-encoders"
 MODAL_CLASS_NAME = "QueryEncoder"
 
+# 2026-08-21 (theo yêu cầu người dùng: "bỏ vào third_party trong thư mục backend để người khác
+# clone repo của mình về thì có code sẵn") - perception_models (PE-Core)/unilm (BEiT-3) không có
+# trên PyPI, phải git clone tay - trước đây clone vào app/.cache/ (bị .gitignore bỏ qua, mỗi máy
+# phải tự clone lại). Giờ vendor thẳng vào backend/third_party/ (COMMIT vào git repo) - clone
+# repo chính xong là có sẵn code, không cần chạy thêm lệnh git clone nào nữa. Checkpoint BEiT-3
+# (.pth ~445MB, binary nặng) vẫn để ở app/.cache/beit3/ (gitignored) - tự tải qua HTTP khi cần
+# (xem _load_beit3 dưới), không vendor vào git vì quá nặng cho 1 file nhị phân.
+from config import _APP_ROOT
+
+THIRD_PARTY_DIR = _APP_ROOT / "backend" / "third_party"
+
 SIGLIP_MODEL_NAME = "google/siglip2-base-patch16-224"
 PE_CORE_MODEL_NAME = "PE-Core-B16-224"
 BEIT3_CKPT_URL = "https://github.com/addf400/files/releases/download/beit3/beit3_base_patch16_384_coco_retrieval.pth"
@@ -73,10 +84,18 @@ class _LocalQueryEncoder:
     hoan toan khong dung git-clone/tai checkpoint gi ca)."""
 
     def __init__(self) -> None:
-        from config import _V3_ROOT
+        # 2026-08-21 (bug that, phat hien khi nguoi dung hoi "chay BEiT-3/PE-Core thi thieu repo
+        # phai khong"): TRUOC DAY import `_V3_ROOT` - ten CU con sot lai tu thoi dung chung
+        # v3/share/. Khi tach app/backend/core/ ra ban SAO RIENG (xem backend/bootstrap.py),
+        # config.py da doi ten bien thanh `_APP_ROOT` nhung file nay KHONG duoc sua theo -> BAT KY
+        # query encoder nao chay local (ke ca SigLIP2, khong rieng PE-Core/BEiT-3) deu chet NGAY
+        # bang ImportError truoc khi kip toi buoc kiem tra repo/checkpoint. Da kiem chung bang
+        # cach chay that voi AIC_LOCAL_QUERY_ENCODER_SIGLIP=1. Nghia la ca cau hinh
+        # AIC_LOCAL_MODELS=1 trong .env.example xua nay KHONG THE chay duoc.
+        from config import _APP_ROOT
 
-        os.environ.setdefault("HF_HOME", str(_V3_ROOT / ".cache" / "huggingface"))
-        cache_root = _V3_ROOT / ".cache"
+        os.environ.setdefault("HF_HOME", str(_APP_ROOT / ".cache" / "huggingface"))
+        cache_root = _APP_ROOT / ".cache"
 
         self._siglip_model = None
         self._siglip_processor = None
@@ -108,10 +127,12 @@ class _LocalQueryEncoder:
         # 0.2.0) KHONG co submodule "timm.layers" (chi tu ban timm moi hon), nhung PE-Core's
         # pe.py lai `from timm.layers import DropPath`. Shim "timm.layers" -> "timm.models.layers"
         # (duong dan CU, cung class, chi khac ten module) TRUOC khi import pe.py.
-        perception_models_dir = cache_root / "perception_models"
+        # 2026-08-21: vendor trong backend/third_party/ (commit vào git, xem ghi chú THIRD_PARTY_
+        # DIR đầu file) thay vì app/.cache/ (gitignored, mỗi máy phải tự clone lại).
+        perception_models_dir = THIRD_PARTY_DIR / "perception_models"
         if not perception_models_dir.exists():
             raise RuntimeError(
-                f"Chưa clone perception_models — xem README.md mục setup PE-Core:\n"
+                f"Chưa có backend/third_party/perception_models — xem README.md mục setup PE-Core:\n"
                 f"  git clone --depth 1 https://github.com/facebookresearch/perception_models.git "
                 f"{perception_models_dir}\n"
                 f"  pip install -e {perception_models_dir} --no-deps"
@@ -153,10 +174,13 @@ class _LocalQueryEncoder:
             six_mod.inf = float("inf")
             sys.modules["torch._six"] = six_mod
 
-        unilm_dir = cache_root / "unilm"
+        # 2026-08-21: vendor trong backend/third_party/ (commit vào git) - xem ghi chú THIRD_
+        # PARTY_DIR đầu file. Checkpoint/spm ở trên VẪN để app/.cache/beit3/ (binary lớn, tự tải
+        # qua HTTP, không vendor vào git).
+        unilm_dir = THIRD_PARTY_DIR / "unilm"
         if not unilm_dir.exists():
             raise RuntimeError(
-                f"Chưa clone unilm — xem README.md mục setup BEiT-3:\n"
+                f"Chưa có backend/third_party/unilm — xem README.md mục setup BEiT-3:\n"
                 f"  git clone --depth 1 https://github.com/microsoft/unilm.git {unilm_dir}"
             )
         sys.path.insert(0, str(unilm_dir / "beit3"))
